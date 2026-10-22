@@ -9,6 +9,7 @@ class Job:
     description: str = ""
     location: str = ""
     company: str = ""
+    language: str = ""
     skills: set[str] = field(default_factory=set)
 
 
