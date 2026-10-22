@@ -8,17 +8,23 @@ from bs4 import BeautifulSoup
 
 from ..models import Job
 
-QUERIES = ("QA Engineer", "IT Project Manager")
+QUERIES = ("QA Engineer", "QA", "Manual QA", "IT Project Manager", "Project Manager")
 
 
 def _published_at_from_text(text: str) -> datetime | None:
     lowered = text.lower()
     now = datetime.now(timezone.utc)
-    match = re.search(r"(\d+)\s*(минут|минуты|час|часа|часов|minute|minutes|hour|hours)\s*(назад|ago)", lowered)
+    match = re.search(r"(\d+)\s*(минут|минуты|час|часа|часов|дн\.?|день|дня|days?|minute|minutes|hour|hours)\s*(назад|ago)", lowered)
     if match:
         amount = int(match.group(1))
         unit = match.group(2)
-        return now - (timedelta(minutes=amount) if unit.startswith(("мин", "minute")) else timedelta(hours=amount))
+        if unit.startswith(("мин", "minute")):
+            delta = timedelta(minutes=amount)
+        elif unit.startswith(("д", "day")):
+            delta = timedelta(days=amount)
+        else:
+            delta = timedelta(hours=amount)
+        return now - delta
     if "сегодня" in lowered or "today" in lowered:
         return now
     months = {
@@ -158,6 +164,29 @@ def _remote_job_enrich(client: httpx.Client, job: Job) -> Job:
     return job
 
 
+def _talanto_enrich(client: httpx.Client, job: Job) -> Job:
+    """Load Talanto's article body instead of the short listing card."""
+    try:
+        page = client.get(job.url)
+        page.raise_for_status()
+        node = BeautifulSoup(page.text, "html.parser").select_one(".article-body")
+        if node:
+            return Job(
+                title=job.title,
+                url=job.url,
+                source=job.source,
+                description=" ".join(node.get_text(" ", strip=True).split()),
+                location=job.location,
+                company=job.company,
+                language=job.language,
+                skills=job.skills,
+                published_at=job.published_at,
+            )
+    except httpx.HTTPError:
+        pass
+    return job
+
+
 def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     try:
         response = client.get(
@@ -214,10 +243,14 @@ def search_all(timeout: float, since: datetime | None = None) -> list[Job]:
                 "talanto.work": "https://talanto.work/?" + urlencode({"q": query}),
                 "instahyre.com": "https://www.instahyre.com/search-jobs/",
                 "remote-job.ru": "https://remote-job.ru/search?" + urlencode({
-                    "search[query]": "QA" if query == "QA Engineer" else "Project Manager"
+                    "search[query]": "QA" if "QA" in query else "Project Manager"
                 }),
             }
             for source, url in sources.items():
+                if source == "instahyre.com" and query != QUERIES[0]:
+                    # The public Instahyre endpoint has no query parameter;
+                    # avoid making the same blocked request for every synonym.
+                    continue
                 try:
                     response = client.get(url)
                     response.raise_for_status()
@@ -226,6 +259,8 @@ def search_all(timeout: float, since: datetime | None = None) -> list[Job]:
                         extracted = [_hirify_enrich(client, job) for job in extracted]
                     elif source == "remote-job.ru":
                         extracted = [_remote_job_enrich(client, job) for job in extracted]
+                    elif source == "talanto.work":
+                        extracted = [_talanto_enrich(client, job) for job in extracted]
                     jobs.extend(extracted)
                 except httpx.HTTPStatusError as exc:
                     if source == "hh.ru" and exc.response.status_code == 403:
