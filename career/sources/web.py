@@ -1,5 +1,6 @@
 from urllib.parse import urlencode, urljoin
 import re
+import time
 
 import httpx
 from bs4 import BeautifulSoup
@@ -46,6 +47,43 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
     return list(jobs.values())
 
 
+def _hh_enrich(client: httpx.Client, job: Job) -> Job:
+    """Replace HH's search snippet with the full public vacancy description."""
+    if not job.url:
+        return job
+    for attempt in range(2):
+        try:
+            time.sleep(0.8 if attempt == 0 else 1.5)
+            page = httpx.get(
+                job.url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+                },
+                timeout=client.timeout,
+                follow_redirects=True,
+            )
+            page.raise_for_status()
+            node = BeautifulSoup(page.text, "html.parser").select_one('[data-qa="vacancy-description"]')
+            if node:
+                return Job(
+                    title=job.title,
+                    url=job.url,
+                    source=job.source,
+                    description=" ".join(node.get_text(" ", strip=True).split()),
+                    location=job.location,
+                    company=job.company,
+                    language=job.language,
+                    skills=job.skills,
+                )
+            break
+        except httpx.HTTPError:
+            if attempt == 0:
+                time.sleep(0.3)
+    return job
+
+
 def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     try:
         response = client.get(
@@ -62,21 +100,25 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
             raise
         fallback = client.get("https://hh.ru/search/vacancy", params={"text": query, "area": 1})
         fallback.raise_for_status()
-        return _extract("hh.ru", str(fallback.url), fallback.text)
+        return [_hh_enrich(client, job) for job in _extract("hh.ru", str(fallback.url), fallback.text)]
     jobs = []
     for item in response.json().get("items", []):
         snippet = item.get("snippet") or {}
         description = " ".join(filter(None, [snippet.get("requirement"), snippet.get("responsibility")]))
         languages = ", ".join(x.get("name", "") for x in (item.get("languages") or []) if x.get("name"))
-        jobs.append(Job(
+        vacancy_url = item.get("alternate_url") or item.get("url", "")
+        # HH search results contain only a short snippet. Fetch the public page
+        # so matching sees the complete requirements and responsibilities.
+        job = Job(
             title=item.get("name", query),
-            url=item.get("alternate_url") or item.get("url", ""),
+            url=vacancy_url,
             source="hh.ru",
             description=description,
             location=(item.get("area") or {}).get("name", ""),
             company=(item.get("employer") or {}).get("name", ""),
             language=languages,
-        ))
+        )
+        jobs.append(_hh_enrich(client, job))
     return jobs
 
 

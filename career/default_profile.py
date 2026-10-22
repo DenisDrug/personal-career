@@ -15,13 +15,13 @@ DEFAULT_PROFILE = {
 }
 
 SKILL_ALIASES = {
-    "manual testing": ("ручное тестирование", "manual qa", "manual tester"),
+    "manual testing": ("ручное тестирование", "ручной тестировщик", "manual qa", "manual tester"),
     "functional testing": ("функциональное тестирование", "functional test"),
     "api testing": ("тестирование api", "api test", "rest api"),
     "test cases": ("тест-кейсы", "тест кейсы", "тестовые сценарии", "test case"),
     "test documentation": ("тестовая документация", "документация по тестированию"),
     "regression testing": ("регрессионное тестирование", "regression test"),
-    "smoke testing": ("smoke test", "смоук-тестирование"),
+    "smoke testing": ("smoke test", "смоук", "смоук-тестирование", "smoke testing"),
     "bug tracking": ("баг-трекинг", "отслеживание ошибок", "дефекты", "defect tracking"),
     "test plans": ("план тестирования", "планы тестирования"),
     "project management": ("управление проектами", "ведение проектов"),
@@ -34,4 +34,5 @@ SKILL_ALIASES = {
     "roadmap": ("дорожная карта", "план развития"),
     "communication": ("коммуникация", "взаимодействие", "переговоры"),
     "agile": ("гибкая методология", "гибкие методологии"),
+    "sql": ("sql", "реляционная бд", "реляционные бд", "реляционная база данных", "реляционные базы данных", "простые sql-запросы"),
 }
