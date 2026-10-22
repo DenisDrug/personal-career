@@ -29,17 +29,19 @@ def run_once() -> int:
     profile = load_profile(settings.resume_dir, settings.extra_skills)
     jobs = search_all(settings.timeout)
     storage = Storage(settings.database_path)
-    eligible = 0
+    russian_jobs = 0
+    matched_jobs = 0
     sent = 0
     for job in jobs:
         if storage.already_sent(job.url):
             continue
         if not is_russian_job(job):
             continue
+        russian_jobs += 1
         match = match_job(job, profile)
         if match.score < settings.threshold:
             continue
-        eligible += 1
+        matched_jobs += 1
         try:
             send_match(settings.telegram_token, settings.telegram_chat_id, match, settings.timeout)
         except Exception as exc:
@@ -47,7 +49,7 @@ def run_once() -> int:
             continue
         storage.mark_sent(job.url)
         sent += 1
-    print(f"Collected {len(jobs)} jobs, eligible {eligible}, sent {sent} notifications")
+    print(f"Collected {len(jobs)} jobs, Russian {russian_jobs}, matched {matched_jobs}, sent {sent} notifications")
     return sent
 
 
