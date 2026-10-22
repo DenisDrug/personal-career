@@ -4,12 +4,12 @@ DEFAULT_PROFILE = {
         "qa": [
             "manual testing", "functional testing", "api testing", "postman", "sql",
             "jira", "test cases", "test documentation", "regression testing", "smoke testing",
-            "bug tracking", "test plans", "agile", "scrum", "git",
+            "bug tracking", "test plans", "testing theory", "agile", "scrum", "git",
         ],
         "pm": [
             "project management", "project manager", "stakeholder management", "agile",
             "scrum", "kanban", "jira", "confluence", "risk management", "roadmap",
-            "requirements", "planning", "budget", "team management", "коммуникация",
+            "requirements", "planning", "budget", "team management", "project management theory", "коммуникация",
         ],
     },
 }
@@ -35,4 +35,6 @@ SKILL_ALIASES = {
     "communication": ("коммуникация", "взаимодействие", "переговоры"),
     "agile": ("гибкая методология", "гибкие методологии"),
     "sql": ("sql", "реляционная бд", "реляционные бд", "реляционная база данных", "реляционные базы данных", "простые sql-запросы"),
+    "testing theory": ("теория тестирования", "теории тестирования", "основы тестирования", "тест-дизайн", "техники тест-дизайна", "test theory", "test design"),
+    "project management theory": ("теория управления проектами", "основы управления проектами", "теория project management", "project management theory"),
 }
