@@ -19,11 +19,12 @@ def is_russian_job(job) -> bool:
         marker in language for marker in ("ru", "russian", "рус")
     ):
         return False
-    text = f"{job.title} {job.description}"
+    text = f"{job.title} {job.description}".lower()
     cyrillic = len(re.findall(r"[а-яё]", text.lower()))
     latin = len(re.findall(r"[a-z]", text.lower()))
-    # English-only cards are rejected. English tool names/documentation in a Russian card remain valid.
-    return cyrillic >= 20 or (cyrillic > 0 and cyrillic / max(cyrillic + latin, 1) >= 0.08)
+    # Require a substantial Russian description. English tool names, stack names,
+    # and documentation terms remain valid inside an otherwise Russian vacancy.
+    return cyrillic >= 40 and cyrillic / max(cyrillic + latin, 1) >= 0.25
 
 
 def run_once(since: datetime | None = None, chat_id: str | None = None, skip_sent: bool = True, mark_sent: bool = True) -> int:
