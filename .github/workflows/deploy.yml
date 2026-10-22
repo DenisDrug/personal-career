@@ -1,0 +1,39 @@
+name: Deploy personal career
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: ssh-keyscan -p "${{ secrets.DEPLOY_PORT || 22 }}" -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload source
+        run: |
+          tar --exclude=.git --exclude=.env --exclude=.venv --exclude=career.db -czf - . \
+            | ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+              'mkdir -p /opt/apps/personal-career && tar -xzf - -C /opt/apps/personal-career'
+
+      - name: Install and restart service
+        run: |
+          ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" <<'REMOTE'
+          cd /opt/apps/personal-career
+          test -f .env || { echo '.env is missing on server'; exit 1; }
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -e .
+          sudo install -m 0644 deploy/personal-career.service /etc/systemd/system/personal-career.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable personal-career
+          sudo systemctl restart personal-career
+          sudo systemctl --no-pager --full status personal-career
+          REMOTE

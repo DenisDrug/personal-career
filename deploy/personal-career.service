@@ -1,0 +1,16 @@
+[Unit]
+Description=Personal Career job search service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/opt/apps/personal-career
+ExecStart=/opt/apps/personal-career/.venv/bin/python -m career.main --interval-hours 6
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
