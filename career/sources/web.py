@@ -47,11 +47,22 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
 
 
 def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
-    response = client.get(
-        "https://api.hh.ru/vacancies",
-        params={"text": query, "per_page": 50, "page": 0, "host": "hh.ru", "locale": "RU"},
-    )
-    response.raise_for_status()
+    try:
+        response = client.get(
+            "https://api.hh.ru/vacancies",
+            params={"text": query, "per_page": 50, "page": 0, "host": "hh.ru", "locale": "RU"},
+            headers={
+                "Accept": "application/json",
+                "HH-User-Agent": "personal-career/1.0 (https://github.com/DenisDrug/personal-career)",
+            },
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 403:
+            raise
+        fallback = client.get("https://hh.ru/search/vacancy", params={"text": query, "area": 1})
+        fallback.raise_for_status()
+        return _extract("hh.ru", str(fallback.url), fallback.text)
     jobs = []
     for item in response.json().get("items", []):
         snippet = item.get("snippet") or {}
@@ -70,7 +81,10 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
 
 
 def search_all(timeout: float) -> list[Job]:
-    headers = {"User-Agent": "personal-career/0.1 (+job-search)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
     jobs: list[Job] = []
     client_timeout = httpx.Timeout(timeout, connect=min(timeout, 8))
     with httpx.Client(headers=headers, timeout=client_timeout, follow_redirects=True) as client:
@@ -86,6 +100,20 @@ def search_all(timeout: float) -> list[Job]:
                     response = client.get(url)
                     response.raise_for_status()
                     jobs.extend(_extract(source, url, response.text))
+                except httpx.HTTPStatusError as exc:
+                    if source == "hh.ru" and exc.response.status_code == 403:
+                        try:
+                            fallback = client.get(
+                                "https://hh.ru/search/vacancy",
+                                params={"text": query, "area": 1},
+                            )
+                            fallback.raise_for_status()
+                            jobs.extend(_extract(source, str(fallback.url), fallback.text))
+                            continue
+                        except httpx.HTTPError as fallback_exc:
+                            print(f"[{source}] API and HTML fallback blocked: {fallback_exc}")
+                            continue
+                    print(f"[{source}] search failed: {exc}")
                 except httpx.HTTPError as exc:
                     print(f"[{source}] search failed: {exc}")
             try:
