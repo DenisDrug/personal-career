@@ -8,7 +8,11 @@ from bs4 import BeautifulSoup
 
 from ..models import Job
 
-QUERIES = ("QA Engineer", "QA", "Manual QA", "IT Project Manager", "Project Manager")
+ROLE_QUERIES = {
+    "qa": ("QA Engineer", "QA", "Manual QA", "тестировщик"),
+    "pm": ("IT Project Manager", "Project Manager"),
+}
+QUERIES = tuple(query for values in ROLE_QUERIES.values() for query in values)
 
 
 def _published_at_from_text(text: str) -> datetime | None:
@@ -229,15 +233,16 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     return jobs
 
 
-def search_all(timeout: float, since: datetime | None = None) -> list[Job]:
+def search_all(timeout: float, since: datetime | None = None, role: str | None = None) -> list[Job]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
     }
     jobs: list[Job] = []
     client_timeout = httpx.Timeout(timeout, connect=min(timeout, 8))
+    queries = ROLE_QUERIES.get(role, QUERIES)
     with httpx.Client(headers=headers, timeout=client_timeout, follow_redirects=True) as client:
-        for query in QUERIES:
+        for query in queries:
             sources = {
                 "hirify.me": "https://hirify.me/?" + urlencode({"search": query}),
                 "talanto.work": "https://talanto.work/?" + urlencode({"q": query}),

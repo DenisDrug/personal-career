@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from .config import load_settings
-from .matcher import match_job
+from .matcher import match_job, role_for_title
 from .resumes import load_profile
 from .sources import search_all
 from .storage import Storage
@@ -27,16 +27,18 @@ def is_russian_job(job) -> bool:
     return cyrillic >= 40 and cyrillic / max(cyrillic + latin, 1) >= 0.25
 
 
-def run_once(since: datetime | None = None, chat_id: str | None = None, skip_sent: bool = True, mark_sent: bool = True) -> int:
+def run_once(since: datetime | None = None, chat_id: str | None = None, role: str | None = None, skip_sent: bool = True, mark_sent: bool = True) -> int:
     settings = load_settings()
     profile = load_profile(settings.resume_dir, settings.extra_skills)
-    jobs = search_all(settings.timeout, since=since)
+    jobs = search_all(settings.timeout, since=since, role=role)
     storage = Storage(settings.database_path)
     russian_jobs = 0
     matched_jobs = 0
     sent = 0
     for job in jobs:
         if skip_sent and storage.already_sent(job.url):
+            continue
+        if role and role_for_title(job.title) != role:
             continue
         if not is_russian_job(job):
             continue

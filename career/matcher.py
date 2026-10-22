@@ -16,9 +16,9 @@ def _contains(text: str, phrase: str) -> bool:
     return phrase in text
 
 
-def _role_for_title(title: str) -> str:
+def role_for_title(title: str) -> str:
     title = title.lower()
-    if any(term in title for term in ("qa", "quality assurance", "тестировщик", "tester")):
+    if any(term in title for term in ("qa", "quality assurance", "тестировщик", "tester", "test engineer")):
         return "qa"
     if any(term in title for term in ("project manager", "project management", "менеджер проектов")):
         return "pm"
@@ -27,7 +27,7 @@ def _role_for_title(title: str) -> str:
 
 def match_job(job: Job, profile: dict) -> Match:
     text = f"{job.title} {job.description} {job.company} {job.location}".lower()
-    role = _role_for_title(job.title)
+    role = role_for_title(job.title)
     skills = set(profile.get("skill_groups", {}).get(role, set())) or set(profile["skills"])
     role_catalog = set(DEFAULT_PROFILE["skills"].get(role, skills))
     # The title selects QA/PM, but cannot contribute skills by itself.

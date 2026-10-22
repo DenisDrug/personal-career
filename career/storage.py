@@ -14,3 +14,9 @@ class Storage:
     def mark_sent(self, url: str) -> None:
         self.db.execute("INSERT OR IGNORE INTO sent_jobs(url) VALUES (?)", (url,))
         self.db.commit()
+
+    def clear_sent(self) -> int:
+        count = self.db.execute("SELECT COUNT(*) FROM sent_jobs").fetchone()[0]
+        self.db.execute("DELETE FROM sent_jobs")
+        self.db.commit()
+        return count
