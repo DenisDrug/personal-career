@@ -21,6 +21,14 @@ def _published_at_from_text(text: str) -> datetime | None:
         return now - (timedelta(minutes=amount) if unit.startswith(("мин", "minute")) else timedelta(hours=amount))
     if "сегодня" in lowered or "today" in lowered:
         return now
+    months = {
+        "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+        "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+        "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+    }
+    match = re.search(r"\b(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\b", lowered)
+    if match:
+        return datetime(now.year, months[match.group(2)], int(match.group(1)), tzinfo=timezone.utc)
     return None
 
 
@@ -125,6 +133,31 @@ def _hirify_enrich(client: httpx.Client, job: Job) -> Job:
     return job
 
 
+def _remote_job_enrich(client: httpx.Client, job: Job) -> Job:
+    """Load Remote Job's full vacancy description instead of a listing snippet."""
+    try:
+        page = client.get(job.url)
+        page.raise_for_status()
+        soup = BeautifulSoup(page.text, "html.parser")
+        heading = soup.find(lambda tag: tag.name in ("h2", "h3") and "Описание вакансии" in tag.get_text(" ", strip=True))
+        panel = heading.find_parent(class_="panel-body") if heading else None
+        if panel:
+            return Job(
+                title=job.title,
+                url=job.url,
+                source=job.source,
+                description=" ".join(panel.get_text(" ", strip=True).split()),
+                location=job.location,
+                company=job.company,
+                language=job.language,
+                skills=job.skills,
+                published_at=job.published_at,
+            )
+    except httpx.HTTPError:
+        pass
+    return job
+
+
 def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     try:
         response = client.get(
@@ -180,7 +213,9 @@ def search_all(timeout: float, since: datetime | None = None) -> list[Job]:
                 "hirify.me": "https://hirify.me/?" + urlencode({"search": query}),
                 "talanto.work": "https://talanto.work/?" + urlencode({"q": query}),
                 "instahyre.com": "https://www.instahyre.com/search-jobs/",
-                "remote-job.ru": "https://remote-job.ru/search?" + urlencode({"search[query]": query}),
+                "remote-job.ru": "https://remote-job.ru/search?" + urlencode({
+                    "search[query]": "QA" if query == "QA Engineer" else "Project Manager"
+                }),
             }
             for source, url in sources.items():
                 try:
@@ -189,6 +224,8 @@ def search_all(timeout: float, since: datetime | None = None) -> list[Job]:
                     extracted = _extract(source, url, response.text)
                     if source == "hirify.me":
                         extracted = [_hirify_enrich(client, job) for job in extracted]
+                    elif source == "remote-job.ru":
+                        extracted = [_remote_job_enrich(client, job) for job in extracted]
                     jobs.extend(extracted)
                 except httpx.HTTPStatusError as exc:
                     if source == "hh.ru" and exc.response.status_code == 403:
