@@ -1,3 +1,5 @@
+from html import escape
+
 import httpx
 
 from .models import Match
@@ -8,11 +10,11 @@ def send_match(token: str, chat_id: str, match: Match, timeout: float) -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured")
     job = match.job
     text = (
-        f"<b>{job.title}</b>\n"
-        f"{job.company or 'Компания не указана'} · {job.location or 'Локация не указана'}\n"
+        f"<b>{escape(job.title)}</b>\n"
+        f"{escape(job.company or 'Компания не указана')} · {escape(job.location or 'Локация не указана')}\n"
         f"Совпадение: <b>{match.score:.0%}</b>\n"
-        f"Навыки: {', '.join(match.matched_skills) or 'не определены'}\n"
-        f"Источник: {job.source}\n\n<a href=\"{job.url}\">Открыть вакансию</a>"
+        f"Навыки: {escape(', '.join(match.matched_skills) or 'не определены')}\n"
+        f"Источник: {escape(job.source)}\n\n<a href=\"{escape(job.url, quote=True)}\">Открыть вакансию</a>"
     )
     response = httpx.post(
         f"https://api.telegram.org/bot{token}/sendMessage",

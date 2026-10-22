@@ -1,4 +1,4 @@
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 from datetime import datetime, timedelta, timezone
 import re
 import time
@@ -13,6 +13,13 @@ ROLE_QUERIES = {
     "pm": ("IT Project Manager", "Project Manager"),
 }
 QUERIES = tuple(query for values in ROLE_QUERIES.values() for query in values)
+
+
+def _canonical_url(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.netloc.endswith("hh.ru") and parts.path.startswith("/vacancy/"):
+        return f"https://hh.ru{parts.path}"
+    return url
 
 
 def _published_at_from_text(text: str) -> datetime | None:
@@ -216,7 +223,7 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
         published_at = None
         if item.get("published_at"):
             published_at = datetime.fromisoformat(item["published_at"].replace("Z", "+00:00"))
-        vacancy_url = item.get("alternate_url") or item.get("url", "")
+        vacancy_url = _canonical_url(item.get("alternate_url") or item.get("url", ""))
         # HH search results contain only a short snippet. Fetch the public page
         # so matching sees the complete requirements and responsibilities.
         job = Job(
