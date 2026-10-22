@@ -1,6 +1,8 @@
 import argparse
 import re
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from .config import load_settings
 from .matcher import match_job
@@ -24,16 +26,16 @@ def is_russian_job(job) -> bool:
     return cyrillic >= 20 or (cyrillic > 0 and cyrillic / max(cyrillic + latin, 1) >= 0.08)
 
 
-def run_once() -> int:
+def run_once(since: datetime | None = None, chat_id: str | None = None, skip_sent: bool = True, mark_sent: bool = True) -> int:
     settings = load_settings()
     profile = load_profile(settings.resume_dir, settings.extra_skills)
-    jobs = search_all(settings.timeout)
+    jobs = search_all(settings.timeout, since=since)
     storage = Storage(settings.database_path)
     russian_jobs = 0
     matched_jobs = 0
     sent = 0
     for job in jobs:
-        if storage.already_sent(job.url):
+        if skip_sent and storage.already_sent(job.url):
             continue
         if not is_russian_job(job):
             continue
@@ -43,11 +45,12 @@ def run_once() -> int:
             continue
         matched_jobs += 1
         try:
-            send_match(settings.telegram_token, settings.telegram_chat_id, match, settings.timeout)
+            send_match(settings.telegram_token, chat_id or settings.telegram_chat_id, match, settings.timeout)
         except Exception as exc:
             print(f"Telegram notification failed for {job.url}: {exc}")
             continue
-        storage.mark_sent(job.url)
+        if mark_sent:
+            storage.mark_sent(job.url)
         sent += 1
     print(f"Collected {len(jobs)} jobs, Russian {russian_jobs}, matched {matched_jobs}, sent {sent} notifications")
     return sent
@@ -62,6 +65,10 @@ def main() -> None:
     if args.once:
         run_once()
         return
+    if settings.telegram_token:
+        from .bot import run_bot
+
+        threading.Thread(target=run_bot, args=(settings.telegram_token,), daemon=True).start()
     interval = args.interval_hours or settings.interval_hours
     while True:
         run_once()

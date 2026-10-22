@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,7 @@ class Job:
     company: str = ""
     language: str = ""
     skills: set[str] = field(default_factory=set)
+    published_at: datetime | None = None
 
 
 @dataclass(frozen=True)
