@@ -84,6 +84,31 @@ def _hh_enrich(client: httpx.Client, job: Job) -> Job:
     return job
 
 
+def _hirify_enrich(client: httpx.Client, job: Job) -> Job:
+    """Load Hirify's full description instead of the short listing card."""
+    try:
+        page = client.get(job.url)
+        page.raise_for_status()
+        soup = BeautifulSoup(page.text, "html.parser")
+        heading = soup.find(lambda tag: tag.name in ("h2", "h3") and "Описание вакансии" in tag.get_text(" ", strip=True))
+        island = heading.find_parent(class_="island") if heading else None
+        if island:
+            description = " ".join(island.get_text(" ", strip=True).split())
+            return Job(
+                title=job.title,
+                url=job.url,
+                source=job.source,
+                description=description,
+                location=job.location,
+                company=job.company,
+                language=job.language,
+                skills=job.skills,
+            )
+    except httpx.HTTPError:
+        pass
+    return job
+
+
 def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     try:
         response = client.get(
@@ -141,7 +166,10 @@ def search_all(timeout: float) -> list[Job]:
                 try:
                     response = client.get(url)
                     response.raise_for_status()
-                    jobs.extend(_extract(source, url, response.text))
+                    extracted = _extract(source, url, response.text)
+                    if source == "hirify.me":
+                        extracted = [_hirify_enrich(client, job) for job in extracted]
+                    jobs.extend(extracted)
                 except httpx.HTTPStatusError as exc:
                     if source == "hh.ru" and exc.response.status_code == 403:
                         try:
