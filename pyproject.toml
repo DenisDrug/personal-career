@@ -11,6 +11,14 @@ dependencies = [
   "python-telegram-bot>=21.0",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["career*"]
+exclude = ["deploy*", "resumes*"]
+
 [project.optional-dependencies]
 ocr = ["pytesseract>=0.3.13", "pdf2image>=1.17"]
 dev = ["pytest>=8.0", "ruff>=0.6"]

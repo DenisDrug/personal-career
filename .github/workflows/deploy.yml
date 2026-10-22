@@ -31,7 +31,7 @@ jobs:
           test -f .env || { echo '.env is missing on server'; exit 1; }
           python3.11 -m venv .venv
           .venv/bin/python -m pip install -e .
-          sudo install -m 0644 deploy/personal-career.service /etc/systemd/system/personal-career.service
+          sudo install -m 0644 /opt/apps/personal-career/deploy/personal-career.service /etc/systemd/system/personal-career.service
           sudo systemctl daemon-reload
           sudo systemctl enable personal-career
           sudo systemctl restart personal-career
