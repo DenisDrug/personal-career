@@ -3,6 +3,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from .config import load_settings
 from .matcher import match_job, role_for_title
@@ -130,10 +131,19 @@ def run_once(since: datetime | None = None, chat_id: str | None = None, role: st
     return sent
 
 
+def _next_search_time(now: datetime, search_times: tuple[tuple[int, int], ...]) -> datetime:
+    for hour, minute in search_times:
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate > now:
+            return candidate
+    tomorrow = now + timedelta(days=1)
+    hour, minute = search_times[0]
+    return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run one search and exit")
-    parser.add_argument("--interval-hours", type=float, default=None)
     args = parser.parse_args()
     settings = load_settings()
     if args.once:
@@ -143,10 +153,16 @@ def main() -> None:
         from .bot import run_bot
 
         threading.Thread(target=run_bot, args=(settings.telegram_token,), daemon=True).start()
-    interval = args.interval_hours or settings.interval_hours
     while True:
+        now = datetime.now(ZoneInfo(settings.timezone_name))
+        next_run = _next_search_time(now, settings.search_times)
+        while True:
+            remaining = (next_run - datetime.now(next_run.tzinfo)).total_seconds()
+            if remaining <= 0:
+                break
+            time.sleep(min(60, remaining))
+        print(f"Scheduled search started at {next_run.isoformat()}")
         run_once()
-        time.sleep(interval * 3600)
 
 
 if __name__ == "__main__":

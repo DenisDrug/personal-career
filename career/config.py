@@ -10,12 +10,26 @@ class Settings:
     root: Path
     resume_dir: Path
     threshold: float
-    interval_hours: float
+    search_times: tuple[tuple[int, int], ...]
+    timezone_name: str
     timeout: float
     database_path: Path
     telegram_token: str
     telegram_chat_id: str
     extra_skills: tuple[str, ...]
+
+
+def _parse_search_times(value: str) -> tuple[tuple[int, int], ...]:
+    times = []
+    for item in value.split(","):
+        hour_text, minute_text = item.strip().split(":", 1)
+        hour, minute = int(hour_text), int(minute_text)
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError(f"Invalid search time: {item!r}")
+        times.append((hour, minute))
+    if not times:
+        raise ValueError("At least one search time is required")
+    return tuple(sorted(set(times)))
 
 
 def load_settings() -> Settings:
@@ -28,7 +42,8 @@ def load_settings() -> Settings:
         root=root,
         resume_dir=root / "resumes",
         threshold=float(os.getenv("MATCH_THRESHOLD", "0.30")),
-        interval_hours=float(os.getenv("SEARCH_INTERVAL_HOURS", "6")),
+        search_times=_parse_search_times(os.getenv("SEARCH_TIMES", "08:00,12:00,16:00,18:00")),
+        timezone_name=os.getenv("SEARCH_TIMEZONE", "Europe/Minsk"),
         timeout=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20")),
         database_path=database,
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
