@@ -1,5 +1,6 @@
 from urllib.parse import urlencode, urljoin, urlsplit
 from datetime import datetime, timedelta, timezone
+import json
 import re
 import time
 
@@ -84,6 +85,83 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
         ):
             jobs.setdefault(href, Job(title=title[:180], url=href, source=source, description=text[:7000], language=_language_hint(text), published_at=_published_at_from_text(text)))
     return list(jobs.values())
+
+
+def _extract_habr(html: str) -> list[Job]:
+    soup = BeautifulSoup(html, "html.parser")
+    jobs: dict[str, Job] = {}
+    for card in soup.select(".vacancy-card"):
+        link = card.select_one(".vacancy-card__title-link, .vacancy-card__backdrop-link")
+        title_node = card.select_one(".vacancy-card__title-link")
+        if not link or not title_node:
+            continue
+        url = urljoin("https://career.habr.com/", link.get("href", ""))
+        title = " ".join(title_node.get_text(" ", strip=True).split())
+        if not title or not url.startswith("https://career.habr.com/vacancies/"):
+            continue
+        meta = [
+            " ".join(node.get_text(" ", strip=True).split())
+            for node in card.select(".vacancy-card__meta .chip-with-icon__text")
+        ]
+        location = ", ".join(value for value in meta if "удалён" not in value.lower() and "удален" not in value.lower())
+        text = " ".join(card.get_text(" ", strip=True).split())
+        published_at = None
+        date_node = card.select_one("time[datetime]")
+        if date_node and date_node.get("datetime"):
+            published_at = datetime.fromisoformat(date_node["datetime"])
+        jobs[url] = Job(
+            title=title[:180],
+            url=url,
+            source="career.habr.com",
+            description=text[:7000],
+            location=location,
+            company=" ".join(card.select_one(".vacancy-card__company").get_text(" ", strip=True).split())
+            if card.select_one(".vacancy-card__company")
+            else "",
+            published_at=published_at,
+        )
+    return list(jobs.values())
+
+
+def _habr_enrich(client: httpx.Client, job: Job) -> Job:
+    """Load Habr Career's full vacancy description and structured metadata."""
+    try:
+        page = client.get(job.url)
+        page.raise_for_status()
+        soup = BeautifulSoup(page.text, "html.parser")
+        state_node = soup.select_one('script[type="application/json"][data-ssr-state]')
+        state = json.loads(state_node.get_text()) if state_node else {}
+        vacancy = state.get("vacancy") or {}
+        description_html = vacancy.get("description") or ""
+        description = " ".join(BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True).split())
+        remote_work = vacancy.get("remoteWork") is True
+        if remote_work:
+            description = f"{description} Можно удалённо".strip()
+        location_data = vacancy.get("location") or {}
+        location = location_data.get("title", "") if isinstance(location_data, dict) else str(location_data)
+        published_at = job.published_at
+        published_date = (vacancy.get("publishedDate") or {}).get("date")
+        if published_date:
+            published_at = datetime.fromisoformat(published_date)
+        return Job(
+            title=vacancy.get("title") or job.title,
+            url=job.url,
+            source=job.source,
+            description=description or job.description,
+            location=location or job.location,
+            company=(vacancy.get("company") or {}).get("title", "") or job.company,
+            language=job.language,
+            skills=job.skills,
+            published_at=published_at,
+        )
+    except (httpx.HTTPError, ValueError, json.JSONDecodeError):
+        return job
+
+
+def _habr_jobs(client: httpx.Client, query: str) -> list[Job]:
+    response = client.get("https://career.habr.com/vacancies", params={"q": query})
+    response.raise_for_status()
+    return [_habr_enrich(client, job) for job in _extract_habr(response.text)]
 
 
 def _hh_enrich(client: httpx.Client, job: Job) -> Job:
@@ -290,6 +368,10 @@ def search_all(timeout: float, since: datetime | None = None, role: str | None =
                     print(f"[{source}] search failed: {exc}")
                 except httpx.HTTPError as exc:
                     print(f"[{source}] search failed: {exc}")
+            try:
+                jobs.extend(_habr_jobs(client, query))
+            except (httpx.HTTPError, ValueError) as exc:
+                print(f"[career.habr.com] search failed: {exc}")
             try:
                 jobs.extend(_hh_jobs(client, query))
             except (httpx.HTTPError, ValueError) as exc:

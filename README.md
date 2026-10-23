@@ -1,6 +1,6 @@
 # Personal Career
 
-Сервис ищет вакансии QA Engineer и IT Project Manager на Hirify, HH, Talanto, Instahyre и Remote Job, сравнивает их с PDF-резюме из директории `resumes/` проекта и отправляет вакансии с совпадением от 30% в Telegram.
+Сервис ищет вакансии QA Engineer и IT Project Manager на Habr Career, Hirify, HH, Talanto, Instahyre и Remote Job, сравнивает их с PDF-резюме из директории `resumes/` проекта и отправляет подходящие вакансии в Telegram.
 
 ## Запуск
 
@@ -14,10 +14,10 @@ cp .env.example .env
 python -m career.main --once
 ```
 
-Для постоянного запуска:
+Для постоянного запуска по расписанию 08:00, 12:00, 16:00 и 18:00 (Europe/Minsk):
 
 ```bash
-python -m career.main --interval-hours 6
+python -m career.main
 ```
 
 Если PDF — сканы без текстового слоя, установите optional-зависимости OCR (`pip install -e '.[ocr]'`) и системные `tesseract`/`poppler`. Без OCR сервис использует профиль навыков из `career/default_profile.py`.
