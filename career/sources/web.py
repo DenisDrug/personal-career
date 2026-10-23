@@ -65,7 +65,7 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
         link = card.select_one('a[href*="/jobs/"]')
         title_node = card.select_one("h3, h2")
         if link and title_node:
-            url = urljoin(base_url, link.get("href", ""))
+            url = _canonical_url(urljoin(base_url, link.get("href", "")))
             title = " ".join(title_node.get_text(" ", strip=True).split())
             text = " ".join(card.get_text(" ", strip=True).split())
             if title and url.startswith("http"):
@@ -74,7 +74,7 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
     # Fallback for simpler HTML layouts such as remote-job.ru.
     for link in soup.select("a[href]"):
         title = " ".join(link.get_text(" ", strip=True).split())
-        href = urljoin(base_url, link.get("href", ""))
+        href = _canonical_url(urljoin(base_url, link.get("href", "")))
         if not title or len(title) < 5 or not href.startswith("http"):
             continue
         text = " ".join(link.parent.get_text(" ", strip=True).split()) if link.parent else title
