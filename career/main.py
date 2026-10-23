@@ -12,6 +12,75 @@ from .storage import Storage
 from .telegram import send_match
 
 
+RUSSIAN_LOCATION_MARKERS = (
+    "россия",
+    "russia",
+    "рф",
+    "москва",
+    "санкт-петербург",
+    "санкт петербург",
+    "спб",
+    "екатеринбург",
+    "новосибирск",
+    "нижний новгород",
+    "казань",
+    "самара",
+    "омск",
+    "уфа",
+    "красноярск",
+    "пермь",
+    "воронеж",
+    "ростов-на-дону",
+    "ростов на дону",
+    "краснодар",
+    "сочи",
+    "волгоград",
+    "челябинск",
+    "тюмень",
+    "владивосток",
+    "иркутск",
+    "калининград",
+    "хабаровск",
+)
+REMOTE_MARKERS = (
+    "удалённ",
+    "удаленн",
+    "удалёнка",
+    "удаленка",
+    "дистанционн",
+    "remote",
+    "work from home",
+    "работа из дома",
+    "из дома",
+)
+NON_REMOTE_MARKERS = (
+    "гибрид",
+    "hybrid",
+    "в офисе",
+    "на месте",
+    "офисный формат",
+    "офисная работа",
+)
+
+
+def _has_location_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", text) for marker in markers)
+
+
+def is_russian_remote_job(job) -> bool:
+    """Return whether a Russian vacancy explicitly offers fully remote work."""
+    location = (job.location or "").lower()
+    text = f"{location} {job.title} {job.description}".lower()
+    if not _has_location_marker(text, RUSSIAN_LOCATION_MARKERS):
+        return True
+
+    if re.search(r"не\s+(?:полностью\s+)?удал[её]нн|без\s+удал[её]нн", text):
+        return False
+    if _has_location_marker(text, NON_REMOTE_MARKERS):
+        return False
+    return any(marker in text for marker in REMOTE_MARKERS)
+
+
 def is_russian_job(job) -> bool:
     """Keep Russian-language vacancies; English tech terms are allowed inside them."""
     language = job.language.lower()
@@ -41,6 +110,8 @@ def run_once(since: datetime | None = None, chat_id: str | None = None, role: st
         if role and role_for_title(job.title) != role:
             continue
         if not is_russian_job(job):
+            continue
+        if not is_russian_remote_job(job):
             continue
         russian_jobs += 1
         match = match_job(job, profile)
