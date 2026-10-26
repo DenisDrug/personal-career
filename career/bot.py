@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import load_settings
@@ -57,6 +58,32 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, user: dict) -> None
     )
     for admin_id in settings.admin_chat_ids:
         await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def _notify_user(context: ContextTypes.DEFAULT_TYPE, telegram_id: str, text: str, reply_markup=None) -> bool:
+    try:
+        await context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=reply_markup)
+        return True
+    except TelegramError:
+        return False
+
+
+async def _report_admin_action(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> None:
+    edited = False
+    try:
+        await query.edit_message_text(text)
+        edited = True
+    except TelegramError:
+        pass
+    if query.message:
+        if not edited:
+            await context.bot.send_message(chat_id=query.message.chat_id, text=text)
+        else:
+            await context.bot.send_message(chat_id=query.message.chat_id, text=f"ℹ️ {text}")
 
 
 async def _access_status(
@@ -206,21 +233,47 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     storage = Storage(settings.database_path)
     user = storage.get_user(telegram_id)
     if not user:
-        await query.edit_message_text("Пользователь не найден в БД.")
+        await _report_admin_action(query, context, "⚠️ Пользователь не найден в БД.")
         return
     if action == "user_delete":
         deleted = storage.delete_user(telegram_id)
-        await query.edit_message_text(
-            f"Пользователь {telegram_id} удалён." if deleted else "Пользователь уже удалён."
+        if not deleted:
+            await _report_admin_action(query, context, "⚠️ Пользователь уже удалён.")
+            return
+        await _report_admin_action(query, context, f"🗑 Пользователь {telegram_id} удалён из БД.")
+        notified = await _notify_user(
+            context,
+            telegram_id,
+            "🗑 Ваша учётная запись удалена администратором. Для новой заявки отправьте /start.",
         )
+        if not notified:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"ℹ️ Запись удалена, но уведомить пользователя {telegram_id} не удалось.",
+            )
         return
     status = "approved" if action == "user_approve" else "rejected"
     storage.set_user_status(telegram_id, status)
-    await query.edit_message_text(f"Пользователь {telegram_id}: {status}")
+    status_text = "одобрен" if status == "approved" else "отклонён"
+    await _report_admin_action(query, context, f"Пользователь {telegram_id} {status_text}.")
     if status == "approved":
-        await context.bot.send_message(chat_id=telegram_id, text="✅ Доступ одобрен администратором.", reply_markup=menu_keyboard())
+        notified = await _notify_user(
+            context,
+            telegram_id,
+            "✅ Ваша заявка одобрена. Доступ к поиску вакансий открыт.",
+            reply_markup=menu_keyboard(),
+        )
     else:
-        await context.bot.send_message(chat_id=telegram_id, text="❌ Доступ к боту отклонён администратором.")
+        notified = await _notify_user(
+            context,
+            telegram_id,
+            "❌ Ваша заявка отклонена администратором.",
+        )
+    if not notified and query.message:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"ℹ️ Решение сохранено, но уведомить пользователя {telegram_id} не удалось.",
+        )
 
 
 def _button_filter(label: str):
