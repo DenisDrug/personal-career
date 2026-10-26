@@ -2,34 +2,143 @@ import asyncio
 import re
 from datetime import datetime, timedelta, timezone
 
-from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-QA_BUTTON = "QA вакансии"
-QA_DAILY_BUTTON = "QA за сутки"
-PM_BUTTON = "PM вакансии"
-PM_DAILY_BUTTON = "PM за сутки"
-CLEAR_BUTTON = "Очистить историю"
+from .config import load_settings
+from .storage import Storage
+
+QA_BUTTON = "🔎 QA вакансии"
+QA_DAILY_BUTTON = "🕘 QA за сутки"
+PM_BUTTON = "📋 PM вакансии"
+PM_DAILY_BUTTON = "🕘 PM за сутки"
+CLEAR_BUTTON = "🗑 Очистить историю"
+USERS_BUTTON = "👥 Пользователи"
+PHONE_BUTTON = "📱 Отправить номер телефона"
+
+APPROVE_PREFIX = "user_approve:"
+REJECT_PREFIX = "user_reject:"
 
 
-def menu_keyboard() -> ReplyKeyboardMarkup:
+def menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    rows = [
+        [QA_BUTTON, QA_DAILY_BUTTON],
+        [PM_BUTTON, PM_DAILY_BUTTON],
+    ]
+    if is_admin:
+        rows.append([USERS_BUTTON, CLEAR_BUTTON])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def phone_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [
-            [QA_BUTTON, QA_DAILY_BUTTON],
-            [PM_BUTTON, PM_DAILY_BUTTON],
-            [CLEAR_BUTTON],
-        ],
+        [[KeyboardButton(PHONE_BUTTON, request_contact=True)]],
         resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 
+def _user_info(update: Update) -> tuple[str, str]:
+    user = update.effective_user
+    if not user:
+        return "", ""
+    return str(user.id), user.username or ""
+
+
+def _is_admin(telegram_id: str, settings) -> bool:
+    return telegram_id in settings.admin_chat_ids
+
+
+async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, user: dict) -> None:
+    settings = load_settings()
+    username = f"@{user['username']}" if user["username"] else "не указан"
+    phone = user["phone"] or "не указан"
+    text = (
+        "🔔 Новый пользователь хочет подключиться\n\n"
+        f"ID: <code>{user['telegram_id']}</code>\n"
+        f"Никнейм: {username}\n"
+        f"Телефон: {phone}"
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Одобрить", callback_data=APPROVE_PREFIX + user["telegram_id"]),
+            InlineKeyboardButton("❌ Отклонить", callback_data=REJECT_PREFIX + user["telegram_id"]),
+        ]]
+    )
+    for admin_id in settings.admin_chat_ids:
+        await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def _access_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[bool, bool, dict | None]:
+    settings = load_settings()
+    telegram_id, username = _user_info(update)
+    if not telegram_id:
+        return False, False, None
+    storage = Storage(settings.database_path)
+    user = storage.get_user(telegram_id)
+    if user is None:
+        storage.upsert_user(telegram_id, username=username)
+        user = storage.get_user(telegram_id)
+        if not _is_admin(telegram_id, settings):
+            await _notify_admins(context, user)
+    else:
+        storage.upsert_user(telegram_id, username=username)
+        user = storage.get_user(telegram_id)
+    is_admin = _is_admin(telegram_id, settings)
+    if is_admin and user and user["status"] != "approved":
+        storage.set_user_status(telegram_id, "approved")
+        user = storage.get_user(telegram_id)
+    return bool(is_admin or (user and user["status"] == "approved")), is_admin, user
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
-        await update.message.reply_text("Выберите тип поиска:", reply_markup=menu_keyboard())
+    allowed, is_admin, user = await _access_status(update, context)
+    if not update.message:
+        return
+    if allowed:
+        await update.message.reply_text("Выберите действие:", reply_markup=menu_keyboard(is_admin))
+    elif user and user["status"] == "pending":
+        await update.message.reply_text(
+            "Заявка отправлена администратору. Для подтверждения отправьте номер телефона кнопкой ниже.",
+            reply_markup=phone_keyboard(),
+        )
+    else:
+        await update.message.reply_text("Доступ к боту запрещён.")
+
+
+async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.contact:
+        return
+    contact = update.message.contact
+    telegram_id, username = _user_info(update)
+    settings = load_settings()
+    if not telegram_id:
+        return
+    if contact.user_id and str(contact.user_id) != telegram_id:
+        await update.message.reply_text("Нужно отправить именно свой номер телефона кнопкой Telegram.")
+        return
+    storage = Storage(settings.database_path)
+    storage.upsert_user(telegram_id, username=username, phone=contact.phone_number)
+    user = storage.get_user(telegram_id)
+    if _is_admin(telegram_id, settings):
+        storage.set_user_status(telegram_id, "approved")
+        await update.message.reply_text("Вы зарегистрированы как администратор.", reply_markup=menu_keyboard(True))
+        return
+    if user["status"] != "approved":
+        storage.set_user_status(telegram_id, "pending")
+        user = storage.get_user(telegram_id)
+        await _notify_admins(context, user)
+        await update.message.reply_text("Данные отправлены администратору. Ожидайте подтверждения.")
+    else:
+        await update.message.reply_text("Номер обновлён.", reply_markup=menu_keyboard())
 
 
 async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str, daily: bool) -> None:
+    allowed, is_admin, _ = await _access_status(update, context)
     if not update.message or not update.effective_chat:
+        return
+    if not allowed:
+        await update.message.reply_text("Доступ ещё не одобрен администратором.", reply_markup=phone_keyboard())
         return
     period = "за последние 24 часа" if daily else "за весь доступный период"
     await update.message.reply_text(f"Ищу {role.upper()} вакансии {period}...")
@@ -46,7 +155,7 @@ async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: s
     )
     await update.message.reply_text(
         f"Готово. Отправлено новых вакансий: {sent}.",
-        reply_markup=menu_keyboard(),
+        reply_markup=menu_keyboard(is_admin),
     )
 
 
@@ -67,17 +176,63 @@ async def pm_daily_collection(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed, is_admin, _ = await _access_status(update, context)
     if not update.message:
         return
-    from .config import load_settings
-    from .storage import Storage
-
+    if not allowed or not is_admin:
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
     settings = load_settings()
-    deleted = await asyncio.to_thread(Storage(settings.database_path).clear_sent)
+    deleted = await asyncio.to_thread(lambda: Storage(settings.database_path).clear_sent())
     await update.message.reply_text(
         f"История очищена. Удалено записей: {deleted}. Следующий поиск начнётся заново.",
-        reply_markup=menu_keyboard(),
+        reply_markup=menu_keyboard(True),
     )
+
+
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed, is_admin, _ = await _access_status(update, context)
+    if not update.message:
+        return
+    if not allowed or not is_admin:
+        await update.message.reply_text("Просмотр пользователей доступен только администратору.")
+        return
+    settings = load_settings()
+    users = await asyncio.to_thread(lambda: Storage(settings.database_path).list_users())
+    if not users:
+        await update.message.reply_text("Пользователей пока нет.", reply_markup=menu_keyboard(True))
+        return
+    lines = ["👥 Пользователи бота:"]
+    for user in users:
+        username = f"@{user['username']}" if user["username"] else "без никнейма"
+        phone = user["phone"] or "телефон не указан"
+        lines.append(f"{user['status']} · {user['telegram_id']} · {username} · {phone}")
+    await update.message.reply_text("\n".join(lines), reply_markup=menu_keyboard(True))
+
+
+async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    settings = load_settings()
+    admin_id = str(query.from_user.id)
+    if not _is_admin(admin_id, settings):
+        await query.answer("Недостаточно прав", show_alert=True)
+        return
+    await query.answer()
+    action, telegram_id = query.data.split(":", 1)
+    storage = Storage(settings.database_path)
+    user = storage.get_user(telegram_id)
+    if not user:
+        await query.edit_message_text("Пользователь не найден в БД.")
+        return
+    status = "approved" if action == "user_approve" else "rejected"
+    storage.set_user_status(telegram_id, status)
+    await query.edit_message_text(f"Пользователь {telegram_id}: {status}")
+    if status == "approved":
+        await context.bot.send_message(chat_id=telegram_id, text="✅ Доступ одобрен администратором.", reply_markup=menu_keyboard())
+    else:
+        await context.bot.send_message(chat_id=telegram_id, text="❌ Доступ к боту отклонён администратором.")
 
 
 def _button_filter(label: str):
@@ -87,9 +242,12 @@ def _button_filter(label: str):
 def run_bot(token: str) -> None:
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.CONTACT, receive_contact))
+    application.add_handler(CallbackQueryHandler(approval_callback, pattern=r"^user_(approve|reject):"))
     application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_collection))
     application.add_handler(MessageHandler(_button_filter(QA_DAILY_BUTTON), qa_daily_collection))
     application.add_handler(MessageHandler(_button_filter(PM_BUTTON), pm_collection))
     application.add_handler(MessageHandler(_button_filter(PM_DAILY_BUTTON), pm_daily_collection))
     application.add_handler(MessageHandler(_button_filter(CLEAR_BUTTON), clear_history))
+    application.add_handler(MessageHandler(_button_filter(USERS_BUTTON), list_users))
     application.run_polling(drop_pending_updates=True, stop_signals=None)

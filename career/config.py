@@ -16,6 +16,7 @@ class Settings:
     database_path: Path
     telegram_token: str
     telegram_chat_id: str
+    admin_chat_ids: tuple[str, ...]
     extra_skills: tuple[str, ...]
 
 
@@ -30,6 +31,10 @@ def _parse_search_times(value: str) -> tuple[tuple[int, int], ...]:
     if not times:
         raise ValueError("At least one search time is required")
     return tuple(sorted(set(times)))
+
+
+def _parse_chat_ids(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def load_settings() -> Settings:
@@ -48,5 +53,6 @@ def load_settings() -> Settings:
         database_path=database,
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        admin_chat_ids=_parse_chat_ids(os.getenv("ADMIN_CHAT_IDS", "")) or _parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", "")),
         extra_skills=tuple(x.strip().lower() for x in os.getenv("EXTRA_SKILLS", "").split(",") if x.strip()),
     )
