@@ -312,4 +312,10 @@ def run_bot(token: str) -> None:
     application.add_handler(MessageHandler(_button_filter(PM_DAILY_BUTTON), pm_daily_collection))
     application.add_handler(MessageHandler(_button_filter(CLEAR_BUTTON), clear_history))
     application.add_handler(MessageHandler(_button_filter(USERS_BUTTON), list_users))
-    application.run_polling(drop_pending_updates=True, stop_signals=None)
+    # Keep pending callback queries across restarts. Dropping them makes admin
+    # approval/deletion buttons appear completely unresponsive after deploys.
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+        stop_signals=None,
+    )
