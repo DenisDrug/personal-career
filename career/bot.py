@@ -10,9 +10,15 @@ from .config import load_settings
 from .storage import Storage
 
 QA_BUTTON = "🔎 QA вакансии"
-QA_DAILY_BUTTON = "🕘 QA за сутки"
 PM_BUTTON = "📋 PM вакансии"
-PM_DAILY_BUTTON = "🕘 PM за сутки"
+QA_DAILY_BUTTON = "🆕 Новые QA за сутки"
+QA_ALL_BUTTON = "📚 Найти все QA"
+PM_DAILY_BUTTON = "🆕 Новые PM за сутки"
+PM_ALL_BUTTON = "📚 Найти все PM"
+BACK_BUTTON = "↩️ Назад"
+# Keep handling old keyboard messages that may still be visible in Telegram.
+LEGACY_QA_DAILY_BUTTON = "🕘 QA за сутки"
+LEGACY_PM_DAILY_BUTTON = "🕘 PM за сутки"
 CLEAR_BUTTON = "🗑 Очистить историю"
 USERS_BUTTON = "👥 Пользователи"
 
@@ -23,11 +29,20 @@ DELETE_PREFIX = "user_delete:"
 
 def menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
-        [QA_BUTTON, QA_DAILY_BUTTON],
-        [PM_BUTTON, PM_DAILY_BUTTON],
+        [QA_BUTTON],
+        [PM_BUTTON],
     ]
     if is_admin:
         rows.append([USERS_BUTTON, CLEAR_BUTTON])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def role_submenu_keyboard(role: str) -> ReplyKeyboardMarkup:
+    if role == "qa":
+        rows = [[QA_DAILY_BUTTON], [QA_ALL_BUTTON]]
+    else:
+        rows = [[PM_DAILY_BUTTON], [PM_ALL_BUTTON]]
+    rows.append([BACK_BUTTON])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -180,6 +195,24 @@ async def qa_daily_collection(update: Update, context: ContextTypes.DEFAULT_TYPE
     await collection(update, context, "qa", daily=True)
 
 
+async def qa_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed, _, _ = await _access_status(update, context)
+    if update.message and allowed:
+        await update.message.reply_text("Выберите тип поиска QA:", reply_markup=role_submenu_keyboard("qa"))
+
+
+async def pm_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed, _, _ = await _access_status(update, context)
+    if update.message and allowed:
+        await update.message.reply_text("Выберите тип поиска PM:", reply_markup=role_submenu_keyboard("pm"))
+
+
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed, is_admin, _ = await _access_status(update, context)
+    if update.message and allowed:
+        await update.message.reply_text("Главное меню:", reply_markup=menu_keyboard(is_admin))
+
+
 async def pm_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await collection(update, context, "pm", daily=False)
 
@@ -319,10 +352,15 @@ def run_bot(token: str) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CallbackQueryHandler(approval_callback))
-    application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_collection))
+    application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_menu))
     application.add_handler(MessageHandler(_button_filter(QA_DAILY_BUTTON), qa_daily_collection))
-    application.add_handler(MessageHandler(_button_filter(PM_BUTTON), pm_collection))
+    application.add_handler(MessageHandler(_button_filter(QA_ALL_BUTTON), qa_collection))
+    application.add_handler(MessageHandler(_button_filter(PM_BUTTON), pm_menu))
     application.add_handler(MessageHandler(_button_filter(PM_DAILY_BUTTON), pm_daily_collection))
+    application.add_handler(MessageHandler(_button_filter(PM_ALL_BUTTON), pm_collection))
+    application.add_handler(MessageHandler(_button_filter(LEGACY_QA_DAILY_BUTTON), qa_daily_collection))
+    application.add_handler(MessageHandler(_button_filter(LEGACY_PM_DAILY_BUTTON), pm_daily_collection))
+    application.add_handler(MessageHandler(_button_filter(BACK_BUTTON), back_to_menu))
     application.add_handler(MessageHandler(_button_filter(CLEAR_BUTTON), clear_history))
     application.add_handler(MessageHandler(_button_filter(USERS_BUTTON), list_users))
     # Keep pending callback queries across restarts. Dropping them makes admin
