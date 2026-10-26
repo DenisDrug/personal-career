@@ -216,7 +216,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("Выберите действие:", reply_markup=menu_keyboard(True))
 
 
-async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _process_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
@@ -230,6 +230,9 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Некорректная заявка.")
         return
     action, telegram_id = query.data.split(":", 1)
+    if action not in {"user_approve", "user_reject", "user_delete"}:
+        await _report_admin_action(query, context, "⚠️ Неизвестное действие.")
+        return
     storage = Storage(settings.database_path)
     user = storage.get_user(telegram_id)
     if not user:
@@ -276,6 +279,24 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
 
 
+async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    print(
+        f"Telegram callback received: data={getattr(query, 'data', None)!r}, "
+        f"user_id={getattr(getattr(query, 'from_user', None), 'id', None)!r}",
+        flush=True,
+    )
+    try:
+        await _process_approval_callback(update, context)
+    except Exception as exc:
+        print(f"Telegram callback failed: {exc!r}", flush=True)
+        if query:
+            try:
+                await query.answer("Ошибка обработки действия", show_alert=True)
+            except TelegramError:
+                pass
+
+
 def _button_filter(label: str):
     return filters.Regex(f"^{re.escape(label)}$")
 
@@ -284,7 +305,7 @@ def run_bot(token: str) -> None:
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
-    application.add_handler(CallbackQueryHandler(approval_callback, pattern=r"^user_(approve|reject|delete):"))
+    application.add_handler(CallbackQueryHandler(approval_callback))
     application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_collection))
     application.add_handler(MessageHandler(_button_filter(QA_DAILY_BUTTON), qa_daily_collection))
     application.add_handler(MessageHandler(_button_filter(PM_BUTTON), pm_collection))
