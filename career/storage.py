@@ -60,6 +60,11 @@ class Storage:
         )
         self.db.commit()
 
+    def delete_user(self, telegram_id: str) -> bool:
+        cursor = self.db.execute("DELETE FROM bot_users WHERE telegram_id = ?", (telegram_id,))
+        self.db.commit()
+        return cursor.rowcount > 0
+
     def list_users(self) -> list[dict]:
         rows = self.db.execute(
             "SELECT telegram_id, username, phone, status, created_at, updated_at FROM bot_users ORDER BY created_at"

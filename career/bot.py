@@ -17,6 +17,7 @@ USERS_BUTTON = "👥 Пользователи"
 
 APPROVE_PREFIX = "user_approve:"
 REJECT_PREFIX = "user_reject:"
+DELETE_PREFIX = "user_delete:"
 
 
 def menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -58,7 +59,11 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, user: dict) -> None
         await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=keyboard)
 
 
-async def _access_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[bool, bool, dict | None]:
+async def _access_status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    notify_pending: bool = False,
+) -> tuple[bool, bool, dict | None]:
     settings = load_settings()
     telegram_id, username = _user_info(update)
     if not telegram_id:
@@ -73,6 +78,8 @@ async def _access_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         storage.upsert_user(telegram_id, username=username)
         user = storage.get_user(telegram_id)
+        if notify_pending and user["status"] == "pending" and not _is_admin(telegram_id, settings):
+            await _notify_admins(context, user)
     is_admin = _is_admin(telegram_id, settings)
     if is_admin and user and user["status"] != "approved":
         storage.set_user_status(telegram_id, "approved")
@@ -81,7 +88,7 @@ async def _access_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    allowed, is_admin, user = await _access_status(update, context)
+    allowed, is_admin, user = await _access_status(update, context, notify_pending=True)
     if not update.message:
         return
     if allowed:
@@ -169,12 +176,17 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not users:
         await update.message.reply_text("Пользователей пока нет.", reply_markup=menu_keyboard(True))
         return
-    lines = ["👥 Пользователи бота:"]
+    await update.message.reply_text("👥 Пользователи бота:")
     for user in users:
         username = f"@{user['username']}" if user["username"] else "без никнейма"
-        phone = user["phone"] or "телефон не указан"
-        lines.append(f"{user['status']} · {user['telegram_id']} · {username} · {phone}")
-    await update.message.reply_text("\n".join(lines), reply_markup=menu_keyboard(True))
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑 Удалить пользователя", callback_data=DELETE_PREFIX + user["telegram_id"])
+        ]])
+        await update.message.reply_text(
+            f"👤 Никнейм: {username}\n🆔 ID: {user['telegram_id']}",
+            reply_markup=keyboard,
+        )
+    await update.message.reply_text("Выберите действие:", reply_markup=menu_keyboard(True))
 
 
 async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,6 +208,12 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not user:
         await query.edit_message_text("Пользователь не найден в БД.")
         return
+    if action == "user_delete":
+        deleted = storage.delete_user(telegram_id)
+        await query.edit_message_text(
+            f"Пользователь {telegram_id} удалён." if deleted else "Пользователь уже удалён."
+        )
+        return
     status = "approved" if action == "user_approve" else "rejected"
     storage.set_user_status(telegram_id, status)
     await query.edit_message_text(f"Пользователь {telegram_id}: {status}")
@@ -213,7 +231,7 @@ def run_bot(token: str) -> None:
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
-    application.add_handler(CallbackQueryHandler(approval_callback, pattern=r"^user_(approve|reject):"))
+    application.add_handler(CallbackQueryHandler(approval_callback, pattern=r"^user_(approve|reject|delete):"))
     application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_collection))
     application.add_handler(MessageHandler(_button_filter(QA_DAILY_BUTTON), qa_daily_collection))
     application.add_handler(MessageHandler(_button_filter(PM_BUTTON), pm_collection))
