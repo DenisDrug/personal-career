@@ -9,6 +9,7 @@ dependencies = [
   "pypdf>=5.0",
   "python-dotenv>=1.0",
   "python-telegram-bot>=21.0",
+  "psycopg[binary]>=3.2",
 ]
 
 [build-system]

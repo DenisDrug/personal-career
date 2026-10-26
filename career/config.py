@@ -14,6 +14,7 @@ class Settings:
     timezone_name: str
     timeout: float
     database_path: Path
+    database_url: str
     telegram_token: str
     telegram_chat_id: str
     admin_chat_ids: tuple[str, ...]
@@ -52,6 +53,7 @@ def load_settings() -> Settings:
         timezone_name=os.getenv("SEARCH_TIMEZONE", "Europe/Minsk"),
         timeout=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20")),
         database_path=database,
+        database_url=os.getenv("DATABASE_URL", "").strip(),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         admin_chat_ids=_parse_chat_ids(os.getenv("ADMIN_CHAT_IDS", "")) or _parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", "")),

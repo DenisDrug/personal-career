@@ -110,7 +110,7 @@ async def _access_status(
     telegram_id, username = _user_info(update)
     if not telegram_id:
         return False, False, None
-    storage = Storage(settings.database_path)
+    storage = Storage(settings.database_path, settings.database_url)
     user = storage.get_user(telegram_id)
     if user is None:
         storage.upsert_user(telegram_id, username=username)
@@ -229,7 +229,7 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
     settings = load_settings()
-    deleted = await asyncio.to_thread(lambda: Storage(settings.database_path).clear_sent())
+    deleted = await asyncio.to_thread(lambda: Storage(settings.database_path, settings.database_url).clear_sent())
     await update.message.reply_text(
         f"История очищена. Удалено записей: {deleted}. Следующий поиск начнётся заново.",
         reply_markup=menu_keyboard(True),
@@ -244,7 +244,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Просмотр пользователей доступен только администратору.")
         return
     settings = load_settings()
-    users = await asyncio.to_thread(lambda: Storage(settings.database_path).list_users())
+    users = await asyncio.to_thread(lambda: Storage(settings.database_path, settings.database_url).list_users())
     if not users:
         await update.message.reply_text("Пользователей пока нет.", reply_markup=menu_keyboard(True))
         return
@@ -278,7 +278,7 @@ async def _process_approval_callback(update: Update, context: ContextTypes.DEFAU
     if action not in {"user_approve", "user_reject", "user_delete"}:
         await _report_admin_action(query, context, "⚠️ Неизвестное действие.")
         return
-    storage = Storage(settings.database_path)
+    storage = Storage(settings.database_path, settings.database_url)
     user = storage.get_user(telegram_id)
     if not user:
         await _report_admin_action(query, context, "⚠️ Пользователь не найден в БД.")

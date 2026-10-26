@@ -101,7 +101,7 @@ def run_once(since: datetime | None = None, chat_id: str | None = None, role: st
     settings = load_settings()
     profile = load_profile(settings.resume_dir, settings.extra_skills)
     jobs = search_all(settings.timeout, since=since, role=role)
-    storage = Storage(settings.database_path)
+    storage = Storage(settings.database_path, settings.database_url)
     russian_jobs = 0
     matched_jobs = 0
     sent = 0
