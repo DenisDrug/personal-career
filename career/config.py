@@ -17,6 +17,7 @@ class Settings:
     telegram_token: str
     telegram_chat_id: str
     admin_chat_ids: tuple[str, ...]
+    admin_user_ids: tuple[str, ...]
     extra_skills: tuple[str, ...]
 
 
@@ -54,5 +55,6 @@ def load_settings() -> Settings:
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         admin_chat_ids=_parse_chat_ids(os.getenv("ADMIN_CHAT_IDS", "")) or _parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", "")),
+        admin_user_ids=_parse_chat_ids(os.getenv("ADMIN_USER_IDS", "")) or _parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", "")),
         extra_skills=tuple(x.strip().lower() for x in os.getenv("EXTRA_SKILLS", "").split(",") if x.strip()),
     )

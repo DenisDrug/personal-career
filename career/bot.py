@@ -2,7 +2,7 @@ import asyncio
 import re
 from datetime import datetime, timedelta, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import load_settings
@@ -14,7 +14,6 @@ PM_BUTTON = "📋 PM вакансии"
 PM_DAILY_BUTTON = "🕘 PM за сутки"
 CLEAR_BUTTON = "🗑 Очистить историю"
 USERS_BUTTON = "👥 Пользователи"
-PHONE_BUTTON = "📱 Отправить номер телефона"
 
 APPROVE_PREFIX = "user_approve:"
 REJECT_PREFIX = "user_reject:"
@@ -30,14 +29,6 @@ def menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def phone_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(PHONE_BUTTON, request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
 def _user_info(update: Update) -> tuple[str, str]:
     user = update.effective_user
     if not user:
@@ -46,18 +37,16 @@ def _user_info(update: Update) -> tuple[str, str]:
 
 
 def _is_admin(telegram_id: str, settings) -> bool:
-    return telegram_id in settings.admin_chat_ids
+    return telegram_id in settings.admin_user_ids
 
 
 async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, user: dict) -> None:
     settings = load_settings()
     username = f"@{user['username']}" if user["username"] else "не указан"
-    phone = user["phone"] or "не указан"
     text = (
         "🔔 Новый пользователь хочет подключиться\n\n"
         f"ID: <code>{user['telegram_id']}</code>\n"
-        f"Никнейм: {username}\n"
-        f"Телефон: {phone}"
+        f"Никнейм: {username}"
     )
     keyboard = InlineKeyboardMarkup(
         [[
@@ -99,38 +88,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Выберите действие:", reply_markup=menu_keyboard(is_admin))
     elif user and user["status"] == "pending":
         await update.message.reply_text(
-            "Заявка отправлена администратору. Для подтверждения отправьте номер телефона кнопкой ниже.",
-            reply_markup=phone_keyboard(),
+            "Заявка отправлена администратору. Ожидайте подтверждения.",
         )
     else:
         await update.message.reply_text("Доступ к боту запрещён.")
 
 
-async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.contact:
-        return
-    contact = update.message.contact
-    telegram_id, username = _user_info(update)
-    settings = load_settings()
-    if not telegram_id:
-        return
-    if contact.user_id and str(contact.user_id) != telegram_id:
-        await update.message.reply_text("Нужно отправить именно свой номер телефона кнопкой Telegram.")
-        return
-    storage = Storage(settings.database_path)
-    storage.upsert_user(telegram_id, username=username, phone=contact.phone_number)
-    user = storage.get_user(telegram_id)
-    if _is_admin(telegram_id, settings):
-        storage.set_user_status(telegram_id, "approved")
-        await update.message.reply_text("Вы зарегистрированы как администратор.", reply_markup=menu_keyboard(True))
-        return
-    if user["status"] != "approved":
-        storage.set_user_status(telegram_id, "pending")
-        user = storage.get_user(telegram_id)
-        await _notify_admins(context, user)
-        await update.message.reply_text("Данные отправлены администратору. Ожидайте подтверждения.")
-    else:
-        await update.message.reply_text("Номер обновлён.", reply_markup=menu_keyboard())
+async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    telegram_id, _ = _user_info(update)
+    if update.message and telegram_id:
+        await update.message.reply_text(f"Ваш Telegram ID: {telegram_id}")
 
 
 async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str, daily: bool) -> None:
@@ -138,7 +105,7 @@ async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: s
     if not update.message or not update.effective_chat:
         return
     if not allowed:
-        await update.message.reply_text("Доступ ещё не одобрен администратором.", reply_markup=phone_keyboard())
+        await update.message.reply_text("Доступ ещё не одобрен администратором.")
         return
     period = "за последние 24 часа" if daily else "за весь доступный период"
     await update.message.reply_text(f"Ищу {role.upper()} вакансии {period}...")
@@ -220,6 +187,9 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer("Недостаточно прав", show_alert=True)
         return
     await query.answer()
+    if not query.data or ":" not in query.data:
+        await query.edit_message_text("Некорректная заявка.")
+        return
     action, telegram_id = query.data.split(":", 1)
     storage = Storage(settings.database_path)
     user = storage.get_user(telegram_id)
@@ -242,7 +212,7 @@ def _button_filter(label: str):
 def run_bot(token: str) -> None:
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.CONTACT, receive_contact))
+    application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CallbackQueryHandler(approval_callback, pattern=r"^user_(approve|reject):"))
     application.add_handler(MessageHandler(_button_filter(QA_BUTTON), qa_collection))
     application.add_handler(MessageHandler(_button_filter(QA_DAILY_BUTTON), qa_daily_collection))
