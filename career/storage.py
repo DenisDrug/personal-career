@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -16,7 +17,14 @@ class Storage:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        self._ensure_user_column("rejection_attempts", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_user_column("retry_after", "TEXT NOT NULL DEFAULT ''")
         self.db.commit()
+
+    def _ensure_user_column(self, name: str, definition: str) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(bot_users)")}
+        if name not in columns:
+            self.db.execute(f"ALTER TABLE bot_users ADD COLUMN {name} {definition}")
 
     def already_sent(self, url: str) -> bool:
         return self.db.execute("SELECT 1 FROM sent_jobs WHERE url = ?", (url,)).fetchone() is not None
@@ -45,20 +53,79 @@ class Storage:
 
     def get_user(self, telegram_id: str) -> dict | None:
         row = self.db.execute(
-            "SELECT telegram_id, username, phone, status, created_at, updated_at FROM bot_users WHERE telegram_id = ?",
+            "SELECT telegram_id, username, phone, status, created_at, updated_at, rejection_attempts, retry_after "
+            "FROM bot_users WHERE telegram_id = ?",
             (telegram_id,),
         ).fetchone()
         if not row:
             return None
-        keys = ("telegram_id", "username", "phone", "status", "created_at", "updated_at")
+        keys = (
+            "telegram_id",
+            "username",
+            "phone",
+            "status",
+            "created_at",
+            "updated_at",
+            "rejection_attempts",
+            "retry_after",
+        )
         return dict(zip(keys, row))
 
     def set_user_status(self, telegram_id: str, status: str) -> None:
+        reset_attempts = status == "approved"
         self.db.execute(
-            "UPDATE bot_users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
-            (status, telegram_id),
+            "UPDATE bot_users SET status = ?, rejection_attempts = CASE WHEN ? THEN 0 ELSE rejection_attempts END, "
+            "retry_after = CASE WHEN ? THEN '' ELSE retry_after END, updated_at = CURRENT_TIMESTAMP "
+            "WHERE telegram_id = ?",
+            (status, reset_attempts, reset_attempts, telegram_id),
         )
         self.db.commit()
+
+    def request_access(self, telegram_id: str) -> bool:
+        """Move a rejected user back to pending unless the 30-day cooldown is active."""
+        user = self.get_user(telegram_id)
+        if not user or user["status"] != "rejected":
+            return False
+
+        now = datetime.now(timezone.utc)
+        retry_after_text = user.get("retry_after", "")
+        retry_after = None
+        if retry_after_text:
+            try:
+                retry_after = datetime.fromisoformat(retry_after_text)
+                if retry_after.tzinfo is None:
+                    retry_after = retry_after.replace(tzinfo=timezone.utc)
+            except ValueError:
+                retry_after = None
+
+        if retry_after and retry_after > now:
+            return False
+
+        should_reset = bool(retry_after) or user["rejection_attempts"] >= 3
+        self.db.execute(
+            "UPDATE bot_users SET status = 'pending', rejection_attempts = CASE WHEN ? THEN 0 ELSE rejection_attempts END, "
+            "retry_after = '', updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+            (should_reset, telegram_id),
+        )
+        self.db.commit()
+        return True
+
+    def reject_user(self, telegram_id: str) -> dict | None:
+        """Reject a user and start a cooldown after the third rejection."""
+        user = self.get_user(telegram_id)
+        if not user:
+            return None
+        attempts = int(user.get("rejection_attempts", 0)) + 1
+        retry_after = ""
+        if attempts >= 3:
+            retry_after = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        self.db.execute(
+            "UPDATE bot_users SET status = 'rejected', rejection_attempts = ?, retry_after = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+            (attempts, retry_after, telegram_id),
+        )
+        self.db.commit()
+        return self.get_user(telegram_id)
 
     def delete_user(self, telegram_id: str) -> bool:
         cursor = self.db.execute("DELETE FROM bot_users WHERE telegram_id = ?", (telegram_id,))
@@ -67,7 +134,17 @@ class Storage:
 
     def list_users(self) -> list[dict]:
         rows = self.db.execute(
-            "SELECT telegram_id, username, phone, status, created_at, updated_at FROM bot_users ORDER BY created_at"
+            "SELECT telegram_id, username, phone, status, created_at, updated_at, rejection_attempts, retry_after "
+            "FROM bot_users ORDER BY created_at"
         ).fetchall()
-        keys = ("telegram_id", "username", "phone", "status", "created_at", "updated_at")
+        keys = (
+            "telegram_id",
+            "username",
+            "phone",
+            "status",
+            "created_at",
+            "updated_at",
+            "rejection_attempts",
+            "retry_after",
+        )
         return [dict(zip(keys, row)) for row in rows]

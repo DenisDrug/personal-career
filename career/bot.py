@@ -105,6 +105,13 @@ async def _access_status(
     else:
         storage.upsert_user(telegram_id, username=username)
         user = storage.get_user(telegram_id)
+        if user["status"] == "rejected":
+            if storage.request_access(telegram_id):
+                user = storage.get_user(telegram_id)
+                if not _is_admin(telegram_id, settings):
+                    await _notify_admins(context, user)
+            else:
+                user = storage.get_user(telegram_id)
         if notify_pending and user["status"] == "pending" and not _is_admin(telegram_id, settings):
             await _notify_admins(context, user)
     is_admin = _is_admin(telegram_id, settings)
@@ -123,6 +130,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif user and user["status"] == "pending":
         await update.message.reply_text(
             "Заявка отправлена администратору. Ожидайте подтверждения.",
+        )
+    elif user and user.get("retry_after"):
+        retry_after = user["retry_after"].replace("+00:00", " UTC")
+        await update.message.reply_text(
+            f"Повторные заявки временно заблокированы до {retry_after}. Попробуйте позже.",
         )
     else:
         await update.message.reply_text("Доступ к боту запрещён.")
@@ -256,7 +268,7 @@ async def _process_approval_callback(update: Update, context: ContextTypes.DEFAU
             )
         return
     status = "approved" if action == "user_approve" else "rejected"
-    storage.set_user_status(telegram_id, status)
+    user = storage.set_user_status(telegram_id, status) if status == "approved" else storage.reject_user(telegram_id)
     status_text = "одобрен" if status == "approved" else "отклонён"
     await _report_admin_action(query, context, f"Пользователь {telegram_id} {status_text}.")
     if status == "approved":
@@ -267,10 +279,11 @@ async def _process_approval_callback(update: Update, context: ContextTypes.DEFAU
             reply_markup=menu_keyboard(),
         )
     else:
+        cooldown_text = " После третьего отклонения новые заявки будут доступны через 30 дней."
         notified = await _notify_user(
             context,
             telegram_id,
-            "❌ Ваша заявка отклонена администратором.",
+            "❌ Ваша заявка отклонена администратором." + cooldown_text,
         )
     if not notified and query.message:
         await context.bot.send_message(
