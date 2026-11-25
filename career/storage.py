@@ -40,6 +40,17 @@ class Storage:
             )"""
         )
         self.db.execute(
+            """CREATE TABLE IF NOT EXISTS user_resumes (
+                telegram_id TEXT NOT NULL,
+                profile_key TEXT NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
+                file_id TEXT NOT NULL DEFAULT '',
+                profile_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (telegram_id, profile_key)
+            )"""
+        )
+        self.db.execute(
             """CREATE TABLE IF NOT EXISTS user_preferences (
                 telegram_id TEXT PRIMARY KEY,
                 roles TEXT NOT NULL DEFAULT 'qa',
@@ -214,6 +225,7 @@ class Storage:
     def delete_user(self, telegram_id: str) -> bool:
         cursor = self.db.execute(self._sql("DELETE FROM bot_users WHERE telegram_id = ?"), (telegram_id,))
         self.db.execute(self._sql("DELETE FROM user_profiles WHERE telegram_id = ?"), (telegram_id,))
+        self.db.execute(self._sql("DELETE FROM user_resumes WHERE telegram_id = ?"), (telegram_id,))
         self.db.execute(self._sql("DELETE FROM user_preferences WHERE telegram_id = ?"), (telegram_id,))
         self.db.execute(self._sql("DELETE FROM user_sent_jobs WHERE telegram_id = ?"), (telegram_id,))
         self.db.execute(self._sql("DELETE FROM user_search_stats WHERE telegram_id = ?"), (telegram_id,))
@@ -237,29 +249,71 @@ class Storage:
         )
         return [dict(zip(keys, row)) for row in rows]
 
-    def save_profile(self, telegram_id: str, filename: str, file_id: str, profile: dict) -> None:
+    def save_profile(
+        self,
+        telegram_id: str,
+        filename: str,
+        file_id: str,
+        profile: dict,
+        profile_key: str = "default",
+    ) -> None:
         self.db.execute(
             self._sql(
-                """INSERT INTO user_profiles(telegram_id, filename, file_id, profile_json)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(telegram_id) DO UPDATE SET
+                """INSERT INTO user_resumes(telegram_id, profile_key, filename, file_id, profile_json)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(telegram_id, profile_key) DO UPDATE SET
                        filename = excluded.filename,
                        file_id = excluded.file_id,
                        profile_json = excluded.profile_json,
                        updated_at = CURRENT_TIMESTAMP"""
             ),
-            (telegram_id, filename, file_id, json.dumps(profile, ensure_ascii=False)),
+            (telegram_id, profile_key, filename, file_id, json.dumps(profile, ensure_ascii=False)),
         )
         self.db.commit()
 
-    def get_profile(self, telegram_id: str) -> dict | None:
+    @staticmethod
+    def _profile_record(row) -> dict:
+        return {"profile_key": row[0], "filename": row[1], "file_id": row[2], "profile": json.loads(row[3]), "updated_at": row[4]}
+
+    def list_profiles(self, telegram_id: str) -> list[dict]:
+        rows = self.db.execute(
+            self._sql(
+                "SELECT profile_key, filename, file_id, profile_json, updated_at "
+                "FROM user_resumes WHERE telegram_id = ? ORDER BY profile_key"
+            ),
+            (telegram_id,),
+        ).fetchall()
+        profiles = [self._profile_record(row) for row in rows]
+        # Preserve the original single-profile records created before the
+        # role-specific resume feature was introduced.
+        if not any(item["profile_key"] == "default" for item in profiles):
+            legacy = self.db.execute(
+                self._sql("SELECT filename, file_id, profile_json, updated_at FROM user_profiles WHERE telegram_id = ?"),
+                (telegram_id,),
+            ).fetchone()
+            if legacy:
+                profiles.insert(0, {"profile_key": "default", "filename": legacy[0], "file_id": legacy[1], "profile": json.loads(legacy[2]), "updated_at": legacy[3]})
+        return profiles
+
+    def get_profile(self, telegram_id: str, profile_key: str = "default") -> dict | None:
         row = self.db.execute(
+            self._sql("SELECT profile_key, filename, file_id, profile_json, updated_at FROM user_resumes WHERE telegram_id = ? AND profile_key = ?"),
+            (telegram_id, profile_key),
+        ).fetchone()
+        if row:
+            return self._profile_record(row)
+        if profile_key != "default":
+            return None
+        legacy = self.db.execute(
             self._sql("SELECT filename, file_id, profile_json, updated_at FROM user_profiles WHERE telegram_id = ?"),
             (telegram_id,),
         ).fetchone()
-        if not row:
+        if not legacy:
             return None
-        return {"filename": row[0], "file_id": row[1], "profile": json.loads(row[2]), "updated_at": row[3]}
+        return {"profile_key": "default", "filename": legacy[0], "file_id": legacy[1], "profile": json.loads(legacy[2]), "updated_at": legacy[3]}
+
+    def get_profile_for_role(self, telegram_id: str, role: str) -> dict | None:
+        return self.get_profile(telegram_id, role) or self.get_profile(telegram_id, "default")
 
     def get_preferences(self, telegram_id: str) -> dict:
         row = self.db.execute(
@@ -274,12 +328,10 @@ class Storage:
                 "auto_search_enabled": False,
                 "work_format": "remote",
             }
-        roles = tuple(role for role in row[0].split(",") if role in ROLE_CATALOG)
-        # MVP supports one selected role. Keep old records usable by choosing
-        # the first valid role from the former multi-role format.
+        roles = tuple(dict.fromkeys(role for role in row[0].split(",") if role in ROLE_CATALOG))
         language_mode = row[2] if row[2] in {"ru", "ru_tech", "any"} else "ru_tech"
         return {
-            "roles": (roles[0] if roles else "qa",),
+            "roles": roles or ("qa",),
             "threshold": float(row[1]),
             "language_mode": language_mode,
             "auto_search_enabled": bool(row[3]),
@@ -295,7 +347,7 @@ class Storage:
         auto_search_enabled: bool = False,
         work_format: str = "remote",
     ) -> None:
-        selected_role = next((role for role in roles if role in ROLE_CATALOG), "qa")
+        selected_roles = tuple(dict.fromkeys(role for role in roles if role in ROLE_CATALOG)) or ("qa",)
         if language_mode not in {"ru", "ru_tech", "any"}:
             language_mode = "ru_tech"
         if work_format not in {"remote", "office"}:
@@ -312,7 +364,7 @@ class Storage:
                        work_format = excluded.work_format,
                        updated_at = CURRENT_TIMESTAMP"""
             ),
-            (telegram_id, selected_role, threshold, language_mode, int(auto_search_enabled), work_format),
+            (telegram_id, ",".join(selected_roles), threshold, language_mode, int(auto_search_enabled), work_format),
         )
         self.db.commit()
 

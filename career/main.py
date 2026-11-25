@@ -151,10 +151,11 @@ def is_russian_job(job) -> bool:
 def run_once(
     since: datetime | None = None,
     chat_id: str | None = None,
-    role: str | None = None,
+    role: str | tuple[str, ...] | None = None,
     skip_sent: bool = True,
     mark_sent: bool = True,
     profile: dict | None = None,
+    profiles: dict[str, dict] | None = None,
     threshold: float | None = None,
     user_id: str | None = None,
     cancel_event: threading.Event | None = None,
@@ -164,7 +165,13 @@ def run_once(
     settings = load_settings()
     profile = profile or load_profile(settings.resume_dir, settings.extra_skills)
     effective_threshold = settings.threshold if threshold is None else threshold
-    jobs = search_all(settings.timeout, since=since, role=role, debug_logs=settings.source_debug_logs)
+    roles = tuple(dict.fromkeys(role)) if isinstance(role, (tuple, list)) else ((role,) if role else ())
+    search_roles = roles or (None,)
+    jobs_by_url = {}
+    for search_role in search_roles:
+        for job in search_all(settings.timeout, since=since, role=search_role, debug_logs=settings.source_debug_logs):
+            jobs_by_url.setdefault(job.url, job)
+    jobs = list(jobs_by_url.values())
     storage = Storage(settings.database_path, settings.database_url)
     russian_jobs = 0
     matched_jobs = 0
@@ -182,14 +189,18 @@ def run_once(
             )
             if already_sent:
                 continue
-        if role and role_for_title(job.title) != role:
+        detected_role = role_for_title(job.title)
+        if roles and detected_role not in roles:
             continue
         if not is_job_language_allowed(job, language_mode):
             continue
         if not is_work_format_allowed(job, work_format):
             continue
         russian_jobs += 1
-        match = match_job(job, profile)
+        active_profile = (profiles or {}).get(detected_role) if profiles else profile
+        if active_profile is None:
+            continue
+        match = match_job(job, active_profile)
         if match.score < effective_threshold:
             continue
         matched_jobs += 1
@@ -234,25 +245,30 @@ def run_scheduled_user_searches(settings) -> int:
         preferences = storage.get_preferences(user_id)
         if not preferences["auto_search_enabled"]:
             continue
-        profile_record = storage.get_profile(user_id)
-        if not profile_record:
-            print(f"Scheduled search skipped for {user_id}: resume is not uploaded", flush=True)
+        roles = tuple(preferences["roles"])
+        profiles = {}
+        for role in roles:
+            profile_record = storage.get_profile_for_role(user_id, role)
+            if profile_record:
+                profiles[role] = profile_record
+        if not profiles:
+            print(f"Scheduled search skipped for {user_id}: no resume is uploaded", flush=True)
             continue
-        role = preferences["roles"][0]
+        roles = tuple(role for role in roles if role in profiles)
         try:
             user_sent = run_once(
                 chat_id=user_id,
-                role=role,
+                role=roles,
                 skip_sent=True,
                 mark_sent=True,
-                profile=profile_record["profile"],
+                profiles={role: profiles[role]["profile"] for role in roles},
                 threshold=preferences["threshold"],
                 user_id=user_id,
                 language_mode=preferences["language_mode"],
                 work_format=preferences["work_format"],
             )
             sent += user_sent
-            print(f"Scheduled search for {user_id} ({role}): sent {user_sent}", flush=True)
+            print(f"Scheduled search for {user_id} ({','.join(roles)}): sent {user_sent}", flush=True)
         except Exception as exc:
             print(f"Scheduled search failed for {user_id}: {exc!r}", flush=True)
     return sent

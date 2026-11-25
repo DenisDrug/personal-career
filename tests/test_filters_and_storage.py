@@ -1,5 +1,7 @@
 from datetime import datetime
+from types import SimpleNamespace
 
+import career.main as main_module
 from career.main import _next_search_time, is_job_language_allowed, is_work_format_allowed
 from career.models import Job
 from career.storage import Storage
@@ -59,3 +61,66 @@ def test_search_stats_are_scoped_to_user_and_deleted_with_user(tmp_path) -> None
     assert storage.delete_user("user-1")
     assert storage.get_search_stats("user-1")["search_count"] == 0
     assert storage.get_search_stats("user-2")["search_count"] == 1
+
+
+def test_preferences_keep_multiple_roles_and_resume_profiles_are_role_specific(tmp_path) -> None:
+    storage = Storage(tmp_path / "career.db")
+    storage.upsert_user("user-1", username="one")
+    storage.save_preferences("user-1", ("qa", "pm"), 0.6)
+    storage.save_profile("user-1", "qa.pdf", "qa-file", {"roles": ["qa"]}, profile_key="qa")
+    storage.save_profile("user-1", "pm.pdf", "pm-file", {"roles": ["pm"]}, profile_key="pm")
+
+    assert storage.get_preferences("user-1")["roles"] == ("qa", "pm")
+    assert {item["profile_key"] for item in storage.list_profiles("user-1")} == {"qa", "pm"}
+    assert storage.get_profile_for_role("user-1", "qa")["filename"] == "qa.pdf"
+    assert storage.get_profile_for_role("user-1", "pm")["filename"] == "pm.pdf"
+
+
+def test_multi_role_search_uses_each_role_profile_and_deduplicates(monkeypatch, tmp_path) -> None:
+    jobs = [
+        _job("Ищем QA инженера. Требования: SQL и ручное тестирование."),
+        Job(
+            title="Project Manager",
+            url="https://example.test/pm",
+            source="test",
+            description="Ищем менеджера проектов. Требования: Agile и управление проектами. " * 2,
+        ),
+    ]
+    jobs[0] = Job(
+        title="QA Engineer",
+        url="https://example.test/qa",
+        source="test",
+        description="Ищем QA инженера. Требования: SQL и ручное тестирование. " * 2,
+    )
+    calls = []
+
+    def fake_search_all(timeout, since=None, role=None, debug_logs=False):
+        calls.append(role)
+        return jobs + [jobs[0]]
+
+    settings = SimpleNamespace(
+        timeout=1,
+        source_debug_logs=False,
+        database_path=tmp_path / "career.db",
+        database_url="",
+        max_notifications_per_run=10,
+        telegram_token="",
+        telegram_chat_id="",
+        threshold=0.5,
+    )
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "search_all", fake_search_all)
+    monkeypatch.setattr(main_module, "send_match", lambda *args, **kwargs: None)
+
+    sent = main_module.run_once(
+        role=("qa", "pm"),
+        profile={"skills": []},
+        profiles={
+            "qa": {"skills": ["sql", "manual testing"], "skill_groups": {"qa": ["sql", "manual testing"]}},
+            "pm": {"skills": ["agile", "project management"], "skill_groups": {"pm": ["agile", "project management"]}},
+        },
+        user_id="user-1",
+    )
+
+    assert calls == ["qa", "pm"]
+    assert sent == 2

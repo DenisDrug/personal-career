@@ -29,8 +29,11 @@ USERS_BUTTON = "👥 Пользователи"
 RESUME_BUTTON = "📄 Моё резюме"
 SETTINGS_BUTTON = "🎯 Настройки поиска"
 STATS_BUTTON = "📊 Моя статистика"
+SEARCH_DAILY_BUTTON = "🆕 Новые выбранные за сутки"
+SEARCH_ALL_BUTTON = "📚 Найти все выбранные"
 CANCEL_SEARCH_BUTTON = "⏹ Отменить поиск"
 CANCEL_SEARCH_CALLBACK = "cancel_search"
+RESUME_PREFIX = "resume_slot:"
 
 WELCOME_MESSAGE = (
     "👋 Это Personal Career — бот для поиска подходящих вакансий.\n\n"
@@ -63,6 +66,14 @@ def role_submenu_keyboard(role: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=False)
 
 
+def selected_roles_search_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[SEARCH_DAILY_BUTTON], [SEARCH_ALL_BUTTON], [BACK_BUTTON]],
+        resize_keyboard=True,
+        is_persistent=False,
+    )
+
+
 def role_menu_button(role: str) -> str:
     return f"{ROLE_CATALOG[role]['icon']} {ROLE_CATALOG[role]['menu']}"
 
@@ -79,6 +90,25 @@ def role_menu_keyboard() -> ReplyKeyboardMarkup:
     rows = [[role_menu_button(role)] for role in ROLE_KEYS]
     rows.append([BACK_BUTTON])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def resume_slot_keyboard(profiles: list[dict]) -> InlineKeyboardMarkup:
+    existing = [profile["profile_key"] for profile in profiles]
+    keys = list(existing)
+    if len(keys) < 2:
+        keys.extend(role for role in ROLE_KEYS if role not in existing)
+    labels = {
+        "default": ("📄 Общее", "Общее"),
+    }
+    buttons = [
+        InlineKeyboardButton(
+            ("🔄 Обновить " if role in existing else "➕ Загрузить ")
+            + labels.get(role, ("", ROLE_CATALOG[role]["short"]))[0 if role == "default" else 1],
+            callback_data=RESUME_PREFIX + role,
+        )
+        for role in keys
+    ]
+    return InlineKeyboardMarkup([buttons[index:index + 2] for index in range(0, len(buttons), 2)])
 
 
 def search_keyboard() -> ReplyKeyboardMarkup:
@@ -135,11 +165,11 @@ def _storage(settings) -> Storage:
 
 
 def _settings_keyboard(preferences: dict) -> InlineKeyboardMarkup:
-    selected_role = preferences["roles"][0] if preferences["roles"] else ""
+    selected_roles = set(preferences["roles"])
     threshold = preferences["threshold"]
     role_buttons = [
         InlineKeyboardButton(
-            ("✅ " if selected_role == role else "") + f"{ROLE_CATALOG[role]['icon']} {ROLE_CATALOG[role]['short']}",
+            ("✅ " if role in selected_roles else "") + f"{ROLE_CATALOG[role]['icon']} {ROLE_CATALOG[role]['short']}",
             callback_data=f"pref_role:{role}",
         )
         for role in ROLE_KEYS
@@ -179,8 +209,10 @@ def _settings_keyboard(preferences: dict) -> InlineKeyboardMarkup:
 
 
 def _settings_text(preferences: dict, has_profile: bool) -> str:
-    selected_role = ROLE_CATALOG.get(preferences["roles"][0]) if preferences["roles"] else None
-    roles = f"{selected_role['icon']} {selected_role['menu']}" if selected_role else "не выбрана"
+    roles = ", ".join(
+        f"{ROLE_CATALOG[role]['icon']} {ROLE_CATALOG[role]['menu']}"
+        for role in preferences["roles"] if role in ROLE_CATALOG
+    ) or "не выбраны"
     language_names = {
         "ru": "только русский",
         "ru_tech": "русский + технический английский",
@@ -326,21 +358,27 @@ async def resume_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     settings = load_settings()
     telegram_id, _ = _user_info(update)
-    profile = await asyncio.to_thread(lambda: _storage(settings).get_profile(telegram_id))
-    if not profile:
+    profiles = await asyncio.to_thread(lambda: _storage(settings).list_profiles(telegram_id))
+    if not profiles:
         await update.message.reply_text(
-            "📄 Резюме ещё не загружено. Отправьте сюда файл в формате PDF или DOCX.\n"
-            "Файл нужен только для извлечения навыков и не сохраняется на сервере.",
+            "📄 Резюме ещё не загружено. Выберите роль, затем отправьте PDF или DOCX.",
+            reply_markup=resume_slot_keyboard([]),
         )
         return
-    parsed = profile["profile"]
-    roles = ", ".join(parsed.get("roles", [])) or "не определены автоматически"
+    lines = ["📄 Мои резюме\n"]
+    for profile in profiles:
+        parsed = profile["profile"]
+        detected_roles = ", ".join(parsed.get("roles", [])) or "не определены автоматически"
+        lines.append(
+            f"{ROLE_CATALOG.get(profile['profile_key'], {'icon': '📄', 'short': 'Общее'})['icon']} "
+            f"{ROLE_CATALOG.get(profile['profile_key'], {'short': 'Общее'})['short']}: {profile['filename']}\n"
+            f"Роли в резюме: {detected_roles}; навыков: {len(parsed.get('skills', []))}; "
+            f"английский: {parsed.get('english_level', 'не указан')}\n"
+        )
+    lines.append("Выберите роль, чтобы заменить или добавить резюме (максимум 2).")
     await update.message.reply_text(
-        f"📄 Резюме: {profile['filename']}\n"
-        f"Роли: {roles}\n"
-        f"Распознано навыков: {len(parsed.get('skills', []))}\n\n"
-        f"Английский: {parsed.get('english_level', 'не указан')}\n\n"
-        "Чтобы заменить резюме, отправьте новый PDF или DOCX.",
+        "\n".join(lines),
+        reply_markup=resume_slot_keyboard(profiles),
     )
 
 
@@ -389,12 +427,20 @@ async def resume_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         settings = load_settings()
         profile = await asyncio.to_thread(profile_from_text, text, settings.extra_skills)
         telegram_id, _ = _user_info(update)
+        storage = _storage(settings)
+        profile_key = context.user_data.pop("resume_role", "default")
+        existing_profiles = await asyncio.to_thread(storage.list_profiles, telegram_id)
+        existing_keys = {item["profile_key"] for item in existing_profiles}
+        if profile_key not in existing_keys and len(existing_keys) >= 2:
+            await update.message.reply_text("Можно хранить не более двух резюме. Обновите одно из существующих.")
+            return
         await asyncio.to_thread(
-            lambda: _storage(settings).save_profile(telegram_id, filename, document.file_id, profile)
+            lambda: storage.save_profile(telegram_id, filename, document.file_id, profile, profile_key=profile_key)
         )
         roles = ", ".join(profile.get("roles", [])) or "не определены автоматически"
         await update.message.reply_text(
-            f"✅ Резюме сохранено.\nРоли: {roles}\nРаспознано навыков: {len(profile.get('skills', []))}\n"
+            f"✅ Резюме сохранено для роли: {ROLE_CATALOG.get(profile_key, {'short': 'Общее'})['short']}.\n"
+            f"Роли распознаны в тексте: {roles}\nРаспознано навыков: {len(profile.get('skills', []))}\n"
             "Исходный файл не сохраняется — хранится только структурированный профиль навыков."
         )
     except Exception as exc:
@@ -412,14 +458,14 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     telegram_id, _ = _user_info(update)
     storage = _storage(settings)
     preferences = await asyncio.to_thread(storage.get_preferences, telegram_id)
-    profile = await asyncio.to_thread(storage.get_profile, telegram_id)
+    profiles = await asyncio.to_thread(storage.list_profiles, telegram_id)
     await update.message.reply_text(
-        _settings_text(preferences, profile is not None),
+        _settings_text(preferences, bool(profiles)),
         reply_markup=_settings_keyboard(preferences),
     )
 
 
-async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str, daily: bool) -> None:
+async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str | tuple[str, ...], daily: bool) -> None:
     if await _block_menu_during_search(update):
         return
     allowed, is_admin, _ = await _access_status(update, context)
@@ -428,24 +474,41 @@ async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: s
     if not allowed:
         await update.message.reply_text("Доступ ещё не одобрен администратором.")
         return
+    roles = tuple(dict.fromkeys(role)) if isinstance(role, (tuple, list)) else (role,)
     period = "за последние 24 часа" if daily else "за весь доступный период"
     settings = load_settings()
     telegram_id, _ = _user_info(update)
     storage = _storage(settings)
-    profile = await asyncio.to_thread(storage.get_profile, telegram_id)
+    profiles = {}
+    for selected_role in roles:
+        profile_record = await asyncio.to_thread(storage.get_profile_for_role, telegram_id, selected_role)
+        if profile_record:
+            profiles[selected_role] = profile_record
     preferences = await asyncio.to_thread(storage.get_preferences, telegram_id)
-    if not profile:
+    if not profiles:
         await update.message.reply_text(
-            "Сначала загрузите резюме: нажмите «📄 Моё резюме» и отправьте PDF или DOCX."
+            "Сначала загрузите резюме для выбранной роли: нажмите «📄 Моё резюме», "
+            "выберите роль и отправьте PDF или DOCX.",
+            reply_markup=menu_keyboard(is_admin),
         )
         return
-    if role not in preferences["roles"]:
+    disabled = [selected_role for selected_role in roles if selected_role not in preferences["roles"]]
+    if disabled:
         await update.message.reply_text(
-            f"Роль {role.upper()} отключена в настройках поиска. Откройте «🎯 Настройки поиска»."
+            "Выбранные роли отключены в настройках поиска. Откройте «🎯 Настройки поиска»."
         )
         return
+    roles = tuple(selected_role for selected_role in roles if selected_role in profiles)
+    missing = [selected_role for selected_role in preferences["roles"] if selected_role not in profiles]
+    if not roles:
+        await update.message.reply_text(
+            "Для выбранных ролей нет загруженного резюме. Откройте «📄 Моё резюме» и добавьте его."
+        )
+        return
+    role_names = ", ".join(ROLE_CATALOG[selected_role]["short"] for selected_role in roles)
+    missing_text = "\nНе загружено: " + ", ".join(ROLE_CATALOG[item]["short"] for item in missing) if missing else ""
     await update.message.reply_text(
-        f"Ищу {role.upper()} вакансии {period}...\n"
+        f"Ищу вакансии: {role_names} {period}...{missing_text}\n"
         "Другие действия временно недоступны. Поиск можно остановить кнопкой ниже.",
         reply_markup=cancel_search_inline_keyboard(),
     )
@@ -462,10 +525,10 @@ async def collection(update: Update, context: ContextTypes.DEFAULT_TYPE, role: s
                 run_once,
                 since=since,
                 chat_id=str(update.effective_chat.id),
-                role=role,
+                role=roles,
                 skip_sent=True,
                 mark_sent=True,
-                profile=profile["profile"],
+                profiles={selected_role: profiles[selected_role]["profile"] for selected_role in roles},
                 threshold=preferences["threshold"],
                 user_id=telegram_id,
                 cancel_event=cancel_event,
@@ -539,11 +602,27 @@ async def search_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     settings = load_settings()
     telegram_id, _ = _user_info(update)
     preferences = await asyncio.to_thread(_storage(settings).get_preferences, telegram_id)
-    role = preferences["roles"][0] if preferences["roles"] else "qa"
+    roles = preferences["roles"] or ("qa",)
+    role_names = ", ".join(ROLE_CATALOG[role]["short"] for role in roles)
     await update.message.reply_text(
-        f"Выберите тип поиска: {ROLE_CATALOG[role]['menu']}",
-        reply_markup=role_submenu_keyboard(role),
+        f"Выберите тип поиска для ролей: {role_names}",
+        reply_markup=selected_roles_search_keyboard(),
     )
+
+
+async def selected_roles_collection(update: Update, context: ContextTypes.DEFAULT_TYPE, daily: bool) -> None:
+    settings = load_settings()
+    telegram_id, _ = _user_info(update)
+    preferences = await asyncio.to_thread(_storage(settings).get_preferences, telegram_id)
+    await collection(update, context, preferences["roles"], daily=daily)
+
+
+async def selected_roles_daily_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await selected_roles_collection(update, context, daily=True)
+
+
+async def selected_roles_all_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await selected_roles_collection(update, context, daily=False)
 
 
 async def role_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -571,6 +650,34 @@ async def role_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if text == role_all_button(role):
             await collection(update, context, role, daily=False)
             return
+
+
+async def resume_slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith(RESUME_PREFIX):
+        return
+    settings = load_settings()
+    telegram_id = str(query.from_user.id)
+    allowed, _, _ = await _access_status(update, context)
+    if not allowed:
+        await query.answer("Доступ не одобрен", show_alert=True)
+        return
+    role = query.data.removeprefix(RESUME_PREFIX)
+    if role != "default" and role not in ROLE_CATALOG:
+        await query.answer("Неизвестная роль", show_alert=True)
+        return
+    storage = _storage(settings)
+    profiles = await asyncio.to_thread(storage.list_profiles, telegram_id)
+    if role not in {profile["profile_key"] for profile in profiles} and len(profiles) >= 2:
+        await query.answer("Уже загружено 2 резюме", show_alert=True)
+        return
+    context.user_data["resume_role"] = role
+    await query.answer("Роль выбрана")
+    if query.message:
+        await query.message.reply_text(
+            f"Отправьте PDF или DOCX резюме для роли {ROLE_CATALOG.get(role, {'short': 'Общее'})['short']}. "
+            "Файл будет обработан в памяти, исходник не сохраняется."
+        )
 
 
 async def cancel_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -732,10 +839,17 @@ async def _process_preferences_callback(update: Update, context: ContextTypes.DE
         if value not in ROLE_CATALOG:
             await query.answer("Неизвестная роль", show_alert=True)
             return
-        roles = (value,)
+        roles = list(preferences["roles"])
+        if value in roles:
+            if len(roles) == 1:
+                await query.answer("Нужно выбрать хотя бы одну роль", show_alert=True)
+                return
+            roles.remove(value)
+        else:
+            roles.append(value)
         storage.save_preferences(
             telegram_id,
-            roles,
+            tuple(roles),
             preferences["threshold"],
             preferences["language_mode"],
             preferences["auto_search_enabled"],
@@ -798,11 +912,11 @@ async def _process_preferences_callback(update: Update, context: ContextTypes.DE
         await query.answer("Неизвестная настройка", show_alert=True)
         return
     preferences = storage.get_preferences(telegram_id)
-    profile = storage.get_profile(telegram_id)
+    profiles = storage.list_profiles(telegram_id)
     await query.answer("Настройка сохранена")
     try:
         await query.edit_message_text(
-            _settings_text(preferences, profile is not None),
+            _settings_text(preferences, bool(profiles)),
             reply_markup=_settings_keyboard(preferences),
         )
     except TelegramError:
@@ -819,6 +933,8 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         if query and query.data == CANCEL_SEARCH_CALLBACK:
             await cancel_search_callback(update, context)
+        elif query and query.data and query.data.startswith(RESUME_PREFIX):
+            await resume_slot_callback(update, context)
         elif query and query.data and query.data.startswith("pref_"):
             await _process_preferences_callback(update, context)
         else:
@@ -847,6 +963,8 @@ def run_bot(token: str) -> None:
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CallbackQueryHandler(approval_callback))
     application.add_handler(MessageHandler(_button_filter(SEARCH_BUTTON), search_menu))
+    application.add_handler(MessageHandler(_button_filter(SEARCH_DAILY_BUTTON), selected_roles_daily_collection))
+    application.add_handler(MessageHandler(_button_filter(SEARCH_ALL_BUTTON), selected_roles_all_collection))
     application.add_handler(MessageHandler(_buttons_filter(tuple(role_menu_button(role) for role in ROLE_KEYS)), role_selection))
     application.add_handler(
         MessageHandler(
