@@ -8,11 +8,10 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..models import Job
+from ..roles import ROLE_CATALOG, ROLE_KEYS
+from .instahyre import search_instahyre
 
-ROLE_QUERIES = {
-    "qa": ("QA Engineer", "QA", "Manual QA", "тестировщик"),
-    "pm": ("IT Project Manager", "Project Manager"),
-}
+ROLE_QUERIES = {key: role["queries"] for key, role in ROLE_CATALOG.items()}
 QUERIES = tuple(query for values in ROLE_QUERIES.values() for query in values)
 
 
@@ -20,6 +19,8 @@ def _canonical_url(url: str) -> str:
     parts = urlsplit(url)
     if parts.netloc.endswith("hh.ru") and parts.path.startswith("/vacancy/"):
         return f"https://hh.ru{parts.path}"
+    if parts.netloc.endswith("instahyre.com") and "/job-" in parts.path:
+        return f"https://www.instahyre.com{parts.path}"
     return url
 
 
@@ -80,9 +81,12 @@ def _extract(source: str, base_url: str, html: str) -> list[Job]:
             continue
         text = " ".join(link.parent.get_text(" ", strip=True).split()) if link.parent else title
         lowered = f"{title} {text}".lower()
-        if ("/jobs/" in href or "/vacancy/" in href) and any(
-            term in lowered for term in ("qa", "quality", "тест", "project manager", "pm")
-        ):
+        role_markers = tuple(
+            term.lower()
+            for role in ROLE_CATALOG.values()
+            for term in role["title_terms"]
+        )
+        if ("/jobs/" in href or "/vacancy/" in href) and any(term in lowered for term in role_markers):
             jobs.setdefault(href, Job(title=title[:180], url=href, source=source, description=text[:7000], language=_language_hint(text), published_at=_published_at_from_text(text)))
     return list(jobs.values())
 
@@ -318,32 +322,82 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     return jobs
 
 
-def search_all(timeout: float, since: datetime | None = None, role: str | None = None) -> list[Job]:
+def search_all(
+    timeout: float,
+    since: datetime | None = None,
+    role: str | None = None,
+    debug_logs: bool = False,
+) -> list[Job]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
     }
     jobs: list[Job] = []
+    source_names = ("hirify.me", "talanto.work", "instahyre.com", "remote-job.ru", "career.habr.com", "hh.ru")
+    source_stats = {
+        source: {"requests": 0, "found": 0, "errors": 0, "statuses": {}}
+        for source in source_names
+    }
+
+    def record_status(source: str, status: str) -> None:
+        statuses = source_stats[source]["statuses"]
+        statuses[status] = statuses.get(status, 0) + 1
+
+    def log_source_result(source: str, query: str, found: int) -> None:
+        stats = source_stats[source]
+        stats["found"] += found
+        if debug_logs:
+            print(
+                f"[{source}] query={query!r} requests={stats['requests']} "
+                f"found={found} errors={stats['errors']}",
+                flush=True,
+            )
+
     client_timeout = httpx.Timeout(timeout, connect=min(timeout, 8))
-    queries = ROLE_QUERIES.get(role, QUERIES)
+    role_keys = (role,) if role in ROLE_CATALOG else ROLE_KEYS
+    query_groups = [(role_key, query) for role_key in role_keys for query in ROLE_QUERIES[role_key]]
     with httpx.Client(headers=headers, timeout=client_timeout, follow_redirects=True) as client:
-        for query in queries:
+        for role_key, query in query_groups:
             sources = {
                 "hirify.me": "https://hirify.me/?" + urlencode({"search": query}),
                 "talanto.work": "https://talanto.work/?" + urlencode({"q": query}),
                 "instahyre.com": "https://www.instahyre.com/search-jobs/",
                 "remote-job.ru": "https://remote-job.ru/search?" + urlencode({
-                    "search[query]": "QA" if "QA" in query else "Project Manager"
+                    "search[query]": ROLE_CATALOG[role_key]["remote_query"]
                 }),
             }
             for source, url in sources.items():
-                if source == "instahyre.com" and query != QUERIES[0]:
+                if source == "instahyre.com" and query != ROLE_QUERIES[role_key][0]:
                     # The public Instahyre endpoint has no query parameter;
                     # avoid making the same blocked request for every synonym.
                     continue
+                source_stats[source]["requests"] += 1
                 try:
+                    if source == "instahyre.com":
+                        extracted = search_instahyre(query, timeout=timeout)
+                        jobs.extend(extracted)
+                        record_status(source, "browser:200")
+                        log_source_result(source, query, len(extracted))
+                        continue
                     response = client.get(url)
                     response.raise_for_status()
+                    record_status(source, str(response.status_code))
+                    if source == "hirify.me" and "Too many requests" in response.text:
+                        source_stats[source]["errors"] += 1
+                        record_status(source, "429_embedded")
+                        print(
+                            "[hirify.me] search blocked by anti-bot protection; official API access is required",
+                            flush=True,
+                        )
+                        continue
+                    if source == "instahyre.com" and "enable JavaScript" in response.text:
+                        source_stats[source]["errors"] += 1
+                        record_status(source, "javascript_shell")
+                        print(
+                            "[instahyre.com] search returned JavaScript shell; browser/API integration is required",
+                            flush=True,
+                        )
+                        continue
                     extracted = _extract(source, url, response.text)
                     if source == "hirify.me":
                         extracted = [_hirify_enrich(client, job) for job in extracted]
@@ -352,7 +406,10 @@ def search_all(timeout: float, since: datetime | None = None, role: str | None =
                     elif source == "talanto.work":
                         extracted = [_talanto_enrich(client, job) for job in extracted]
                     jobs.extend(extracted)
+                    log_source_result(source, query, len(extracted))
                 except httpx.HTTPStatusError as exc:
+                    source_stats[source]["errors"] += 1
+                    record_status(source, str(exc.response.status_code))
                     if source == "hh.ru" and exc.response.status_code == 403:
                         try:
                             fallback = client.get(
@@ -360,23 +417,52 @@ def search_all(timeout: float, since: datetime | None = None, role: str | None =
                                 params={"text": query, "area": 1},
                             )
                             fallback.raise_for_status()
-                            jobs.extend(_extract(source, str(fallback.url), fallback.text))
+                            record_status(source, f"fallback:{fallback.status_code}")
+                            fallback_jobs = _extract(source, str(fallback.url), fallback.text)
+                            jobs.extend(fallback_jobs)
+                            log_source_result(source, query, len(fallback_jobs))
                             continue
                         except httpx.HTTPError as fallback_exc:
                             print(f"[{source}] API and HTML fallback blocked: {fallback_exc}")
                             continue
                     print(f"[{source}] search failed: {exc}")
+                except RuntimeError as exc:
+                    source_stats[source]["errors"] += 1
+                    record_status(source, type(exc).__name__)
+                    print(f"[{source}] browser search skipped: {exc}", flush=True)
                 except httpx.HTTPError as exc:
+                    source_stats[source]["errors"] += 1
+                    record_status(source, type(exc).__name__)
                     print(f"[{source}] search failed: {exc}")
             try:
-                jobs.extend(_habr_jobs(client, query))
+                source_stats["career.habr.com"]["requests"] += 1
+                habr_jobs = _habr_jobs(client, query)
+                jobs.extend(habr_jobs)
+                record_status("career.habr.com", "200")
+                log_source_result("career.habr.com", query, len(habr_jobs))
             except (httpx.HTTPError, ValueError) as exc:
+                source_stats["career.habr.com"]["errors"] += 1
+                record_status("career.habr.com", type(exc).__name__)
                 print(f"[career.habr.com] search failed: {exc}")
             try:
-                jobs.extend(_hh_jobs(client, query))
+                source_stats["hh.ru"]["requests"] += 1
+                hh_jobs = _hh_jobs(client, query)
+                jobs.extend(hh_jobs)
+                record_status("hh.ru", "200_or_fallback")
+                log_source_result("hh.ru", query, len(hh_jobs))
             except (httpx.HTTPError, ValueError) as exc:
+                source_stats["hh.ru"]["errors"] += 1
+                record_status("hh.ru", type(exc).__name__)
                 print(f"[hh.ru] API search failed: {exc}")
     unique_jobs = list({job.url: job for job in jobs if job.url}.values())
     if since is not None:
         unique_jobs = [job for job in unique_jobs if job.published_at and job.published_at >= since]
+    print("Search source statistics:", flush=True)
+    for source, stats in source_stats.items():
+        statuses = ", ".join(f"{status}={count}" for status, count in stats["statuses"].items()) or "none"
+        print(
+            f"  [{source}] requests={stats['requests']} found={stats['found']} "
+            f"errors={stats['errors']} statuses={statuses}",
+            flush=True,
+        )
     return unique_jobs

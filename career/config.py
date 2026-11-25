@@ -4,6 +4,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .roles import ROLE_CATALOG
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -11,10 +13,14 @@ class Settings:
     resume_dir: Path
     threshold: float
     search_times: tuple[tuple[int, int], ...]
+    scheduled_roles: tuple[str, ...]
+    max_notifications_per_run: int
+    source_debug_logs: bool
     timezone_name: str
     timeout: float
     database_path: Path
     database_url: str
+    test_mode: bool
     telegram_token: str
     telegram_chat_id: str
     admin_chat_ids: tuple[str, ...]
@@ -39,6 +45,14 @@ def _parse_chat_ids(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _parse_roles(value: str) -> tuple[str, ...]:
+    roles = tuple(item.strip().lower() for item in value.split(",") if item.strip())
+    unknown = sorted(set(roles) - set(ROLE_CATALOG))
+    if unknown:
+        raise ValueError(f"Unknown scheduled roles: {', '.join(unknown)}")
+    return tuple(dict.fromkeys(roles))
+
+
 def load_settings() -> Settings:
     root = Path(__file__).resolve().parents[1]
     load_dotenv(root / ".env")
@@ -49,11 +63,15 @@ def load_settings() -> Settings:
         root=root,
         resume_dir=root / "resumes",
         threshold=float(os.getenv("MATCH_THRESHOLD", "0.30")),
-        search_times=_parse_search_times(os.getenv("SEARCH_TIMES", "08:00,12:00,16:00,18:00")),
+        search_times=_parse_search_times(os.getenv("SEARCH_TIMES", "08:00,12:00,15:00,18:00")),
+        scheduled_roles=_parse_roles(os.getenv("SCHEDULED_ROLES", "")),
+        max_notifications_per_run=max(1, int(os.getenv("MAX_NOTIFICATIONS_PER_RUN", "50"))),
+        source_debug_logs=os.getenv("SOURCE_DEBUG_LOGS", "false").strip().lower() in {"1", "true", "yes", "on"},
         timezone_name=os.getenv("SEARCH_TIMEZONE", "Europe/Minsk"),
         timeout=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20")),
         database_path=database,
         database_url=os.getenv("DATABASE_URL", "").strip(),
+        test_mode=os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"},
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         admin_chat_ids=_parse_chat_ids(os.getenv("ADMIN_CHAT_IDS", "")) or _parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", "")),

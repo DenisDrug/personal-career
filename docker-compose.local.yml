@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:14
+    container_name: personal-career-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: personal_career
+      POSTGRES_USER: personal_career
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - personal_career_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U personal_career -d personal_career"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  personal_career_pgdata:

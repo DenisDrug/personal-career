@@ -13,11 +13,22 @@ def migrate_sqlite_to_postgres(source_path: Path, database_url: str) -> tuple[in
 
     source = sqlite3.connect(source_path)
     target = Storage(source_path, database_url)
-    sent_rows = source.execute("SELECT url, sent_at FROM sent_jobs ORDER BY url").fetchall()
-    user_rows = source.execute(
-        "SELECT telegram_id, username, phone, status, created_at, updated_at, rejection_attempts, retry_after "
-        "FROM bot_users ORDER BY telegram_id"
-    ).fetchall()
+    source_tables = {
+        row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    sent_rows = (
+        source.execute("SELECT url, sent_at FROM sent_jobs ORDER BY url").fetchall()
+        if "sent_jobs" in source_tables
+        else []
+    )
+    user_rows = (
+        source.execute(
+            "SELECT telegram_id, username, phone, status, created_at, updated_at, rejection_attempts, retry_after "
+            "FROM bot_users ORDER BY telegram_id"
+        ).fetchall()
+        if "bot_users" in source_tables
+        else []
+    )
 
     for url, sent_at in sent_rows:
         target.db.execute(
