@@ -14,7 +14,11 @@ class Storage:
                 import psycopg
             except ImportError as exc:
                 raise RuntimeError("PostgreSQL support requires the psycopg package") from exc
-            self.db = psycopg.connect(database_url)
+            # Every Storage instance is short-lived and many read methods are
+            # called from the bot and scheduler independently.  Autocommit
+            # prevents a read-only SELECT from leaving an idle transaction
+            # that blocks the schema compatibility checks in the next instance.
+            self.db = psycopg.connect(database_url, autocommit=True)
         else:
             self.db = sqlite3.connect(path)
         self.db.execute("CREATE TABLE IF NOT EXISTS sent_jobs (url TEXT PRIMARY KEY, sent_at TEXT DEFAULT CURRENT_TIMESTAMP)")
