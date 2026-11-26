@@ -92,6 +92,8 @@ def test_hh_api_parser_maps_metadata() -> None:
                 "name": "QA Engineer",
                 "alternate_url": "https://hh.ru/vacancy/456?from=api",
                 "snippet": {"requirement": "SQL", "responsibility": "Тестировать"},
+                "schedule": {"id": "remote", "name": "Удалённая работа"},
+                "work_format": [{"id": "REMOTE", "name": "Удалённо"}],
                 "area": {"name": "Москва"},
                 "employer": {"name": "Example"},
                 "languages": [{"name": "Русский"}],
@@ -112,6 +114,7 @@ def test_hh_api_parser_maps_metadata() -> None:
     assert jobs[0].url == "https://hh.ru/vacancy/456"
     assert jobs[0].company == "Example"
     assert "SQL" in jobs[0].description
+    assert "Удалённая работа" in jobs[0].description
 
 
 def test_search_all_isolates_source_failures(monkeypatch, capsys) -> None:

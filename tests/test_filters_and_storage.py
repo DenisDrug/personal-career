@@ -28,9 +28,11 @@ def test_russian_language_filter_allows_technical_english() -> None:
     assert not is_job_language_allowed(_job("English is required for daily communication with the team." * 3), "ru")
 
 
-def test_remote_filter_allows_unspecified_and_remote_but_rejects_office_only() -> None:
-    assert is_work_format_allowed(_job("Тестирование веб-приложения."), "remote")
+def test_remote_filter_requires_remote_and_allows_mixed_remote_options() -> None:
+    assert not is_work_format_allowed(_job("Тестирование веб-приложения."), "remote")
     assert is_work_format_allowed(_job("Удалённая работа по договору."), "remote")
+    assert is_work_format_allowed(_job("Гибридный формат, возможна удалённая работа."), "remote")
+    assert not is_work_format_allowed(_job("Гибридный формат работы: 2 дня в офисе."), "remote")
     assert not is_work_format_allowed(_job("Работа только в офисе, удалённый формат не предусмотрен."), "remote")
 
 
@@ -78,19 +80,19 @@ def test_preferences_keep_multiple_roles_and_resume_profiles_are_role_specific(t
 
 def test_multi_role_search_uses_each_role_profile_and_deduplicates(monkeypatch, tmp_path) -> None:
     jobs = [
-        _job("Ищем QA инженера. Требования: SQL и ручное тестирование."),
+        _job("Удалённая работа. Ищем QA инженера. Требования: SQL и ручное тестирование."),
         Job(
             title="Project Manager",
             url="https://example.test/pm",
             source="test",
-            description="Ищем менеджера проектов. Требования: Agile и управление проектами. " * 2,
+            description="Удалённая работа. Ищем менеджера проектов. Требования: Agile и управление проектами. " * 2,
         ),
     ]
     jobs[0] = Job(
         title="QA Engineer",
         url="https://example.test/qa",
         source="test",
-        description="Ищем QA инженера. Требования: SQL и ручное тестирование. " * 2,
+        description="Удалённая работа. Ищем QA инженера. Требования: SQL и ручное тестирование. " * 2,
     )
     calls = []
 

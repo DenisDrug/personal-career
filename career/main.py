@@ -98,11 +98,12 @@ def is_work_format_allowed(job, work_format: str = "remote") -> bool:
     if work_format == "office":
         # Office mode includes office, hybrid and mixed-format vacancies.
         return explicit_non_remote or not explicit_remote or explicitly_not_remote
-    # Remote mode includes mixed vacancies that also offer remote work, as well
-    # as vacancies whose format was not specified. Office-only vacancies stay out.
+    # Remote mode requires an explicit remote option. Mixed vacancies are
+    # allowed when remote work is one of the options, but office/hybrid-only
+    # and unspecified vacancies are not.
     if explicitly_not_remote:
         return False
-    return explicit_remote or not explicit_non_remote
+    return explicit_remote
 
 
 def is_russian_remote_job(job) -> bool:

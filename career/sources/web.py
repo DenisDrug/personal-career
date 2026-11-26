@@ -192,7 +192,7 @@ def _hh_enrich(client: httpx.Client, job: Job) -> Job:
                     title=job.title,
                     url=job.url,
                     source=job.source,
-                    description=" ".join(node.get_text(" ", strip=True).split()),
+                    description=f"{job.description} {' '.join(node.get_text(' ', strip=True).split())}".strip(),
                     location=job.location,
                     company=job.company,
                     language=job.language,
@@ -301,6 +301,16 @@ def _hh_jobs(client: httpx.Client, query: str) -> list[Job]:
     for item in response.json().get("items", []):
         snippet = item.get("snippet") or {}
         description = " ".join(filter(None, [snippet.get("requirement"), snippet.get("responsibility")]))
+        schedule = item.get("schedule") or {}
+        work_formats = item.get("work_format") or []
+        format_hints = [schedule.get("name", ""), schedule.get("id", "")]
+        format_hints.extend(
+            value.get("name", "") if isinstance(value, dict) else str(value)
+            for value in work_formats
+        )
+        format_hints = list(dict.fromkeys(value for value in format_hints if value))
+        if format_hints:
+            description = f"Формат работы: {', '.join(format_hints)}. {description}".strip()
         languages = ", ".join(x.get("name", "") for x in (item.get("languages") or []) if x.get("name"))
         published_at = None
         if item.get("published_at"):
