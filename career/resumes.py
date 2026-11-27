@@ -8,6 +8,10 @@ from .default_profile import DEFAULT_PROFILE, SKILL_ALIASES
 from .roles import ROLE_CATALOG, ROLE_KEYS, normalize_role_text, role_matches_text
 
 
+MAX_RESUME_BYTES = 10 * 1024 * 1024
+MAX_DOCX_XML_BYTES = 5 * 1024 * 1024
+
+
 def _contains(text: str, phrase: str) -> bool:
     phrase = phrase.lower().strip()
     if re.fullmatch(r"[a-z0-9+#. -]+", phrase):
@@ -25,6 +29,8 @@ def _text_from_pdf(path: Path) -> str:
 
 def extract_resume_text(filename: str, content: bytes) -> str:
     """Extract text in memory; the original uploaded file is not persisted."""
+    if len(content) > MAX_RESUME_BYTES:
+        return ""
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
         try:
@@ -36,7 +42,10 @@ def extract_resume_text(filename: str, content: bytes) -> str:
     if suffix == ".docx":
         try:
             with ZipFile(BytesIO(content)) as archive:
-                xml = archive.read("word/document.xml")
+                info = archive.getinfo("word/document.xml")
+                if info.file_size > MAX_DOCX_XML_BYTES:
+                    return ""
+                xml = archive.read(info)
             root = ElementTree.fromstring(xml)
             return " ".join(node.text or "" for node in root.iter() if node.tag.endswith("}t"))
         except Exception:
