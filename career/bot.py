@@ -3,7 +3,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -40,6 +40,23 @@ WELCOME_MESSAGE = (
     "Он анализирует ваше резюме, сравнивает его с вакансиями и присылает только те "
     "предложения, которые соответствуют вашим навыкам.\n\n"
     "Загрузите резюме, чтобы начать."
+)
+
+HELP_MESSAGE = (
+    "ℹ️ Personal Career — бот для поиска подходящих IT-вакансий.\n\n"
+    "Что умеет бот:\n"
+    "• анализировать загруженное резюме;\n"
+    "• хранить до двух резюме для разных ролей, например QA и Project Manager;\n"
+    "• искать вакансии по одной или нескольким выбранным ролям;\n"
+    "• сравнивать вакансии с соответствующим резюме по навыкам;\n"
+    "• учитывать язык вакансии и формат работы;\n"
+    "• отправлять только новые подходящие вакансии;\n"
+    "• выполнять автоматический поиск по расписанию.\n\n"
+    "Как начать:\n"
+    "1. Откройте «📄 Моё резюме» и загрузите PDF или DOCX.\n"
+    "2. В «🎯 Настройки поиска» выберите роли и фильтры.\n"
+    "3. Нажмите «🔎 Поиск вакансий» или включите автопоиск.\n\n"
+    "Управление выполняется через кнопки меню. Для повторного запуска используйте /start."
 )
 
 APPROVE_PREFIX = "user_approve:"
@@ -344,6 +361,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Доступ к боту запрещён.")
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _block_menu_during_search(update):
+        return
+    allowed, is_admin, _ = await _access_status(update, context)
+    if not update.message:
+        return
+    if not allowed:
+        await update.message.reply_text("Для начала работы отправьте команду /start.")
+        return
+    await update.message.reply_text(HELP_MESSAGE, reply_markup=menu_keyboard(is_admin))
+
+
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     telegram_id, _ = _user_info(update)
     if update.message and telegram_id:
@@ -583,6 +612,23 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     allowed, is_admin, _ = await _access_status(update, context)
     if update.message and allowed:
         await update.message.reply_text("Главное меню:", reply_markup=menu_keyboard(is_admin))
+
+
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explain that the MVP is controlled through buttons, instead of ignoring text."""
+    if not update.message:
+        return
+    if await _block_menu_during_search(update):
+        return
+    allowed, is_admin, _ = await _access_status(update, context)
+    if not allowed:
+        await update.message.reply_text("Для начала работы отправьте команду /start.")
+        return
+    await update.message.reply_text(
+        "ℹ️ Я пока работаю через кнопки меню и не обрабатываю свободный текст.\n"
+        "Выберите нужное действие ниже.",
+        reply_markup=menu_keyboard(is_admin),
+    )
 
 
 async def pm_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -958,8 +1004,16 @@ def _buttons_filter(labels: tuple[str, ...]):
 
 
 def run_bot(token: str) -> None:
-    application = Application.builder().token(token).build()
+    async def register_commands(application: Application) -> None:
+        await application.bot.set_my_commands([
+            BotCommand("start", "Запустить бота"),
+            BotCommand("help", "Что умеет бот"),
+            BotCommand("myid", "Показать Telegram ID"),
+        ])
+
+    application = Application.builder().token(token).post_init(register_commands).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CallbackQueryHandler(approval_callback))
     application.add_handler(MessageHandler(_button_filter(SEARCH_BUTTON), search_menu))
@@ -988,6 +1042,7 @@ def run_bot(token: str) -> None:
     application.add_handler(MessageHandler(_button_filter(STATS_BUTTON), search_statistics))
     application.add_handler(MessageHandler(_button_filter(SETTINGS_BUTTON), settings_menu))
     application.add_handler(MessageHandler(filters.Document.ALL, resume_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
     # Keep pending callback queries across restarts. Dropping them makes admin
     # approval/deletion buttons appear completely unresponsive after deploys.
     application.run_polling(
