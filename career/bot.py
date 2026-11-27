@@ -357,9 +357,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = WELCOME_MESSAGE if existing_user is None else "Выберите действие:"
         await update.message.reply_text(text, reply_markup=menu_keyboard(is_admin))
     elif user and user["status"] == "pending":
-        await update.message.reply_text(
-            "Заявка отправлена администратору. Ожидайте подтверждения.",
-        )
+        text = "Заявка отправлена администратору. Ожидайте подтверждения."
+        if existing_user is None:
+            text = f"{WELCOME_MESSAGE}\n\n{text}"
+        await update.message.reply_text(text)
     elif user and user.get("retry_after"):
         retry_after = user["retry_after"].replace("+00:00", " UTC")
         await update.message.reply_text(
