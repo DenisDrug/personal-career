@@ -126,3 +126,25 @@ def test_multi_role_search_uses_each_role_profile_and_deduplicates(monkeypatch, 
 
     assert calls == ["qa", "pm"]
     assert sent == 2
+
+
+def test_scheduled_snapshot_is_shared_and_deduplicated(monkeypatch, tmp_path) -> None:
+    shared_job = Job(
+        title="QA Engineer",
+        url="https://example.test/shared",
+        source="test",
+        description="Удалённая работа. Ищем QA инженера. Требования: SQL и ручное тестирование. " * 2,
+    )
+    calls = []
+
+    def fake_search_all(timeout, since=None, role=None, debug_logs=False):
+        calls.append(role)
+        return [shared_job, shared_job]
+
+    settings = SimpleNamespace(timeout=1, source_debug_logs=False)
+    monkeypatch.setattr(main_module, "search_all", fake_search_all)
+
+    jobs = main_module._search_jobs_for_roles(settings, ("qa", "pm"))
+
+    assert calls == ["qa", "pm"]
+    assert [job.url for job in jobs] == [shared_job.url]

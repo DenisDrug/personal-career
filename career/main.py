@@ -2,7 +2,8 @@ import argparse
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import load_settings
@@ -162,17 +163,19 @@ def run_once(
     cancel_event: threading.Event | None = None,
     language_mode: str = "ru_tech",
     work_format: str = "remote",
+    jobs: list | None = None,
 ) -> int:
     settings = load_settings()
     profile = profile or load_profile(settings.resume_dir, settings.extra_skills)
     effective_threshold = settings.threshold if threshold is None else threshold
     roles = tuple(dict.fromkeys(role)) if isinstance(role, (tuple, list)) else ((role,) if role else ())
     search_roles = roles or (None,)
-    jobs_by_url = {}
-    for search_role in search_roles:
-        for job in search_all(settings.timeout, since=since, role=search_role, debug_logs=settings.source_debug_logs):
-            jobs_by_url.setdefault(job.url, job)
-    jobs = list(jobs_by_url.values())
+    if jobs is None:
+        jobs_by_url = {}
+        for search_role in search_roles:
+            for job in search_all(settings.timeout, since=since, role=search_role, debug_logs=settings.source_debug_logs):
+                jobs_by_url.setdefault(job.url, job)
+        jobs = list(jobs_by_url.values())
     storage = Storage(settings.database_path, settings.database_url)
     russian_jobs = 0
     matched_jobs = 0
@@ -224,6 +227,55 @@ def run_once(
     return sent
 
 
+def _search_jobs_for_roles(settings, roles: tuple[str, ...]) -> list:
+    """Collect one shared, deduplicated vacancy snapshot for a scheduler run."""
+    jobs_by_url = {}
+    for role in roles:
+        for job in search_all(
+            settings.timeout,
+            role=role,
+            debug_logs=settings.source_debug_logs,
+        ):
+            jobs_by_url.setdefault(job.url, job)
+    jobs = list(jobs_by_url.values())
+    print(f"Shared vacancy snapshot: {len(jobs)} unique jobs for roles={','.join(roles)}", flush=True)
+    return jobs
+
+
+def _prepare_user_matches(
+    settings,
+    jobs: list,
+    user_id: str,
+    roles: tuple[str, ...],
+    profiles: dict[str, dict],
+    threshold: float,
+    language_mode: str,
+    work_format: str,
+) -> tuple[list, int, int]:
+    """Match one user's profiles against a shared snapshot without sending messages."""
+    storage = Storage(settings.database_path, settings.database_url)
+    matches = []
+    russian_jobs = 0
+    for job in jobs:
+        detected_role = role_for_title(job.title)
+        if detected_role not in roles or not is_job_language_allowed(job, language_mode):
+            continue
+        if not is_work_format_allowed(job, work_format):
+            continue
+        russian_jobs += 1
+        profile = profiles.get(detected_role)
+        if profile is None:
+            continue
+        if storage.already_sent_for_user(user_id, job.url):
+            continue
+        match = match_job(job, profile)
+        if match.score >= threshold:
+            matches.append(match)
+            if len(matches) >= settings.max_notifications_per_run:
+                break
+    return matches, russian_jobs, len(matches)
+
+
 def _next_search_time(now: datetime, search_times: tuple[tuple[int, int], ...]) -> datetime:
     for hour, minute in search_times:
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -237,7 +289,7 @@ def _next_search_time(now: datetime, search_times: tuple[tuple[int, int], ...]) 
 def run_scheduled_user_searches(settings) -> int:
     """Run the fixed-time search for users who enabled it in the bot menu."""
     storage = Storage(settings.database_path, settings.database_url)
-    sent = 0
+    plans = []
     users = storage.list_users()
     for user in users:
         if user["status"] != "approved":
@@ -256,22 +308,65 @@ def run_scheduled_user_searches(settings) -> int:
             print(f"Scheduled search skipped for {user_id}: no resume is uploaded", flush=True)
             continue
         roles = tuple(role for role in roles if role in profiles)
-        try:
-            user_sent = run_once(
-                chat_id=user_id,
-                role=roles,
-                skip_sent=True,
-                mark_sent=True,
-                profiles={role: profiles[role]["profile"] for role in roles},
-                threshold=preferences["threshold"],
-                user_id=user_id,
-                language_mode=preferences["language_mode"],
-                work_format=preferences["work_format"],
-            )
-            sent += user_sent
-            print(f"Scheduled search for {user_id} ({','.join(roles)}): sent {user_sent}", flush=True)
-        except Exception as exc:
-            print(f"Scheduled search failed for {user_id}: {exc!r}", flush=True)
+        plans.append({
+            "user_id": user_id,
+            "roles": roles,
+            "profiles": {role: profiles[role]["profile"] for role in roles},
+            "threshold": preferences["threshold"],
+            "language_mode": preferences["language_mode"],
+            "work_format": preferences["work_format"],
+        })
+
+    if not plans:
+        return 0
+
+    roles = tuple(dict.fromkeys(role for plan in plans for role in plan["roles"]))
+    try:
+        jobs = _search_jobs_for_roles(settings, roles)
+    except Exception as exc:
+        print(f"Scheduled shared search failed: {exc!r}", flush=True)
+        return 0
+
+    sent = 0
+    # Matching is CPU-light but independent per user. Keep concurrency capped at
+    # two on the production 1-vCPU host; notification delivery stays serialized.
+    with ThreadPoolExecutor(max_workers=settings.search_workers, thread_name_prefix="career-match") as executor:
+        futures = {
+            executor.submit(
+                _prepare_user_matches,
+                settings,
+                jobs,
+                plan["user_id"],
+                plan["roles"],
+                plan["profiles"],
+                plan["threshold"],
+                plan["language_mode"],
+                plan["work_format"],
+            ): plan
+            for plan in plans
+        }
+        for future, plan in futures.items():
+            user_id = plan["user_id"]
+            try:
+                matches, russian_jobs, matched = future.result()
+                user_sent = 0
+                user_storage = Storage(settings.database_path, settings.database_url)
+                for match in matches:
+                    try:
+                        send_match(settings.telegram_token, user_id, match, settings.timeout)
+                        user_storage.mark_sent_for_user(user_id, match.job.url)
+                        user_sent += 1
+                    except Exception as exc:
+                        print(f"Telegram notification failed for {user_id}/{match.job.url}: {exc}", flush=True)
+                user_storage.record_search_stats(user_id, len(jobs), matched, user_sent)
+                sent += user_sent
+                print(
+                    f"Scheduled search for {user_id} ({','.join(plan['roles'])}): "
+                    f"shared_jobs={len(jobs)}, Russian={russian_jobs}, matched={matched}, sent={user_sent}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"Scheduled search failed for {user_id}: {exc!r}", flush=True)
     return sent
 
 

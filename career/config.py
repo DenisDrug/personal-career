@@ -15,6 +15,7 @@ class Settings:
     search_times: tuple[tuple[int, int], ...]
     scheduled_roles: tuple[str, ...]
     max_notifications_per_run: int
+    search_workers: int
     source_debug_logs: bool
     timezone_name: str
     timeout: float
@@ -66,6 +67,7 @@ def load_settings() -> Settings:
         search_times=_parse_search_times(os.getenv("SEARCH_TIMES", "08:00,12:00,15:00,18:00")),
         scheduled_roles=_parse_roles(os.getenv("SCHEDULED_ROLES", "")),
         max_notifications_per_run=max(1, int(os.getenv("MAX_NOTIFICATIONS_PER_RUN", "50"))),
+        search_workers=min(4, max(1, int(os.getenv("SEARCH_WORKERS", "2")))),
         source_debug_logs=os.getenv("SOURCE_DEBUG_LOGS", "false").strip().lower() in {"1", "true", "yes", "on"},
         timezone_name=os.getenv("SEARCH_TIMEZONE", "Europe/Minsk"),
         timeout=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20")),
