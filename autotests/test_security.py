@@ -42,3 +42,29 @@ def test_storage_can_be_closed_with_context_manager(tmp_path) -> None:
     with Storage(tmp_path / "career.db") as storage:
         storage.upsert_user("security-test")
         assert storage.get_user("security-test") is not None
+
+
+def test_resume_fields_are_parameterized_against_sql_injection(tmp_path) -> None:
+    injection = "'; DROP TABLE bot_users; DROP TABLE user_resumes; --"
+    profile = {"roles": ["qa"], "skills": [injection], "notes": injection}
+
+    with Storage(tmp_path / "career.db") as storage:
+        storage.upsert_user(injection, username=injection, phone=injection)
+        storage.save_profile(
+            injection,
+            filename="../../.env; DROP TABLE bot_users; --.pdf",
+            file_id=injection,
+            profile=profile,
+            profile_key="qa",
+        )
+
+        saved_user = storage.get_user(injection)
+        saved_profile = storage.get_profile(injection, "qa")
+        assert saved_user and saved_user["username"] == injection
+        assert saved_profile and saved_profile["profile"]["notes"] == injection
+        assert storage.db.execute("SELECT COUNT(*) FROM bot_users").fetchone()[0] == 1
+        assert storage.db.execute("SELECT COUNT(*) FROM user_resumes").fetchone()[0] == 1
+
+
+def test_resume_filename_cannot_trigger_filesystem_access() -> None:
+    assert extract_resume_text("../../.env", b"not-a-document") == ""
