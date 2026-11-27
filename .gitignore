@@ -1,6 +1,8 @@
 .env
 career.db
+career.db.sqlite-backup
 __pycache__/
 .venv/
 *.pyc
 *.egg-info/
+resumes/
