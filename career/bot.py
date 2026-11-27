@@ -3,7 +3,15 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonCommands,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -1005,11 +1013,14 @@ def _buttons_filter(labels: tuple[str, ...]):
 
 def run_bot(token: str) -> None:
     async def register_commands(application: Application) -> None:
-        await application.bot.set_my_commands([
+        commands = [
             BotCommand("start", "Запустить бота"),
             BotCommand("help", "Что умеет бот"),
             BotCommand("myid", "Показать Telegram ID"),
-        ])
+        ]
+        await application.bot.set_my_commands(commands)
+        await application.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
     application = Application.builder().token(token).post_init(register_commands).build()
     application.add_handler(CommandHandler("start", start))
